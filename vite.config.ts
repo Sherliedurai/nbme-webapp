@@ -6,7 +6,7 @@ import path from "path";
 export default defineConfig(({ mode }) => ({
   // For GitHub Pages: set base to repo name (will be updated during deploy)
   // For local dev or custom domain, use "/"
-  base: process.env.GITHUB_PAGES ? "/nbme-mastery/" : "/",
+  base: process.env.GITHUB_PAGES ? "/nbme-webapp/" : "/",
   server: {
     host: "::",
     port: 8080,
