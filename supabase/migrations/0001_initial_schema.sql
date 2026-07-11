@@ -41,8 +41,10 @@ create table if not exists public.questions (
   question_type        text not null,                 -- mechanism|diagnosis|next-step|interpretation|association
   created_at           timestamptz not null default now(),
 
+  -- A–Z: NBME extended-matching items can have up to ~26 options (block 1, item 20
+  -- has 9 options A–I with correct answer "I"). A single letter, uppercase.
   constraint questions_correct_letter_chk
-    check (correct_letter in ('A','B','C','D','E','F')),
+    check (correct_letter ~ '^[A-Z]$'),
   -- Single fixed form: q_number is the natural key. Guards against double-loading
   -- the same question. Drop this if you ever import a second form.
   constraint questions_qnumber_uniq unique (q_number)
@@ -91,7 +93,7 @@ create table if not exists public.attempts (
   created_at       timestamptz not null default now(),
 
   constraint attempts_selected_letter_chk
-    check (selected_letter is null or selected_letter in ('A','B','C','D','E','F')),
+    check (selected_letter is null or selected_letter ~ '^[A-Z]$'),
   constraint attempts_seconds_spent_chk
     check (seconds_spent is null or seconds_spent >= 0)
 );
