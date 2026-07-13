@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch({ channel: "chrome", headless: true });
+const page = await browser.newPage();
+const logs = [];
+page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
+page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
+await page.goto("http://localhost:5173/exam/1", { waitUntil: "networkidle" });
+await page.waitForTimeout(1500);
+console.log("URL:", page.url());
+console.log("TITLE:", await page.title());
+console.log("BODY TEXT (first 500):\n", (await page.locator("body").innerText()).slice(0, 500));
+console.log("CONSOLE:\n", logs.join("\n") || "(none)");
+await browser.close();

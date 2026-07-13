@@ -1,0 +1,31 @@
+# ── Licensed NBME content — never commit or push ──────────────────────────
+*.pdf
+import/pages/
+import/images/
+import/out/
+# extracted question bank / SQL are licensed content too
+*.qa.json
+block*.sql
+
+# ── OS / tooling noise ────────────────────────────────────────────────────
+.DS_Store
+.claude/
+node_modules/
+dist/
+
+# ── Frontend env (project URL + anon key; safe in client but not committed) ──
+.env.local
+.env*.local
+*.tsbuildinfo
+
+# Screenshots contain licensed question text
+preview-shots/
+
+# Review page embeds licensed content
+enrichment_review_block1.html
+enrichment_review_block1_results.json
+
+# Third-party Mehlman HY PDFs + derived markdown/index (not ours to commit)
+Mehlman HY pdfs/
+Mehlman HY pdfs /
+import/mehlman/
