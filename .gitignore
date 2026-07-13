@@ -29,3 +29,6 @@ enrichment_review_block1_results.json
 Mehlman HY pdfs/
 Mehlman HY pdfs /
 import/mehlman/
+
+# SQL query-output CSVs (contain licensed content + user_id)
+verify_live_data_*.csv

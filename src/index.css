@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 97%;
+    --foreground: 215 25% 20%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 20%;
+
+    --primary: 211 61% 43%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 16% 93%;
+    --secondary-foreground: 215 25% 27%;
+
+    --muted: 210 16% 94%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 211 60% 96%;
+    --accent-foreground: 211 61% 33%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 211 61% 43%;
+
+    --navy: 215 45% 22%;
+    --navy-foreground: 210 30% 96%;
+
+    --correct: 142 64% 38%;
+    --correct-foreground: 0 0% 100%;
+    --correct-soft: 142 52% 95%;
+
+    --incorrect: 0 72% 51%;
+    --incorrect-foreground: 0 0% 100%;
+    --incorrect-soft: 0 78% 97%;
+
+    --flagged: 38 92% 45%;
+    --flagged-foreground: 0 0% 100%;
+    --flagged-soft: 42 96% 94%;
+
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  /* Vignette body reading style */
+  .vignette-prose {
+    @apply font-serif text-[1.075rem] leading-[1.85] text-slate-800;
+  }
+  /* User highlight applied to vignette text selection */
+  .hl {
+    @apply rounded-[2px] bg-yellow-200/80 px-[1px];
+  }
+}
