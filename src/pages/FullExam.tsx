@@ -30,13 +30,15 @@ type Phase = "loading" | "active" | "break" | "submitting" | "review" | "error";
 interface Collected {
   question: ExamQuestion;
   selectedLetter: string | null;
+  firstLetter: string | null;
   secondsSpent: number;
   flagged: boolean;
+  attemptId?: string | null;
 }
 
 function freshStates(n: number): QuestionState[] {
   return Array.from({ length: n }, (_, i) => ({
-    selectedLetter: null, struckLetters: [], flagged: false, secondsSpent: 0, visited: i === 0, highlightHtml: null,
+    selectedLetter: null, firstLetter: null, struckLetters: [], flagged: false, secondsSpent: 0, visited: i === 0, highlightHtml: null,
   }));
 }
 
@@ -125,6 +127,11 @@ export default function FullExam() {
     const idx = currentIndexRef.current;
     setStates((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
   }, []);
+  const onSelect = useCallback((letter: string) => {
+    const idx = currentIndexRef.current;
+    setStates((prev) => prev.map((s, i) =>
+      i === idx ? { ...s, selectedLetter: letter, firstLetter: s.firstLetter ?? letter } : s));
+  }, []);
   const onToggleStrike = useCallback((letter: string) => {
     const idx = currentIndexRef.current;
     setStates((prev) => prev.map((s, i) => {
@@ -144,7 +151,7 @@ export default function FullExam() {
     commitDwell();
     const collected: Collected[] = questionsRef.current.map((q, i) => {
       const s = statesRef.current[i];
-      return { question: q, selectedLetter: s.selectedLetter, secondsSpent: Math.round(s.secondsSpent), flagged: s.flagged };
+      return { question: q, selectedLetter: s.selectedLetter, firstLetter: s.firstLetter, secondsSpent: Math.round(s.secondsSpent), flagged: s.flagged };
     });
     collectedRef.current = [...collectedRef.current, ...collected];
 
@@ -163,9 +170,11 @@ export default function FullExam() {
       const all = collectedRef.current;
       const key = await getAnswerKey(all.map((c) => c.question.id));
       for (const c of all) {
-        await recordAttempt(user.id, sessionId, {
+        c.attemptId = await recordAttempt(user.id, sessionId, {
           question_id: c.question.id,
           selected_letter: c.selectedLetter,
+          first_letter: c.firstLetter,
+          changed: c.firstLetter != null && c.firstLetter !== c.selectedLetter,
           is_correct: c.selectedLetter != null && c.selectedLetter === key.get(c.question.id),
           seconds_spent: c.secondsSpent,
           flagged: c.flagged,
@@ -182,7 +191,7 @@ export default function FullExam() {
         const f = byId.get(c.question.id);
         if (!f) continue;
         orderedFull.push(f);
-        answers.push({ selectedLetter: c.selectedLetter, secondsSpent: c.secondsSpent, flagged: c.flagged });
+        answers.push({ selectedLetter: c.selectedLetter, secondsSpent: c.secondsSpent, flagged: c.flagged, attemptId: c.attemptId ?? null, errorTag: null });
       }
       setReviewData({ questions: orderedFull, answers });
       setPhase("review");
@@ -254,7 +263,7 @@ export default function FullExam() {
             <VignettePanel key={q.id} question={q} selectedLetter={s.selectedLetter} struckLetters={s.struckLetters}
               highlightHtml={s.highlightHtml} strikeMode={strikeMode} flagged={s.flagged}
               onToggleStrikeMode={() => setStrikeMode((m) => !m)} onToggleFlag={onToggleFlag}
-              onSelect={(l) => patchCurrent({ selectedLetter: l })} onToggleStrike={onToggleStrike}
+              onSelect={onSelect} onToggleStrike={onToggleStrike}
               onChangeHighlight={(h) => patchCurrent({ highlightHtml: h })} />
           )}
         </main>

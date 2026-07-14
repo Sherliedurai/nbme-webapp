@@ -52,7 +52,10 @@ export interface Attempt {
   user_id: string;
   question_id: string;
   block_session_id: string | null;
-  selected_letter: string | null;
+  selected_letter: string | null; // final answer
+  first_letter: string | null; // first-instinct answer (captured once)
+  changed: boolean; // final != first
+  error_tag: string | null; // post-exam miss classification
   is_correct: boolean | null;
   seconds_spent: number | null;
   flagged: boolean;
@@ -89,7 +92,8 @@ export interface EnrichedExplanation {
 // ── In-memory per-question state during a live block ────────────────────────
 
 export interface QuestionState {
-  selectedLetter: string | null;
+  selectedLetter: string | null; // current/final selection
+  firstLetter: string | null; // first radio commit; set once, never overwritten
   struckLetters: string[]; // options crossed out (visual only)
   flagged: boolean;
   secondsSpent: number; // accumulated dwell time

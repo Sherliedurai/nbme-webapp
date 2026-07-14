@@ -7,6 +7,7 @@ import Home from "@/pages/Home";
 import Exam from "@/pages/Exam";
 import Practice from "@/pages/Practice";
 import FullExam from "@/pages/FullExam";
+import Analytics from "@/pages/Analytics";
 import SetupNotice from "@/pages/SetupNotice";
 
 function Protected({ children }: { children: JSX.Element }) {
@@ -29,6 +30,7 @@ export default function App() {
       <Route path="/practice/:blockNumber" element={<Protected><Practice /></Protected>} />
       <Route path="/exam/:blockNumber" element={<Protected><Exam /></Protected>} />
       <Route path="/exam-full" element={<Protected><FullExam /></Protected>} />
+      <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

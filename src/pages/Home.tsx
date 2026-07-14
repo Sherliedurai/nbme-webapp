@@ -5,7 +5,7 @@ import { getBlockCount } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { BookOpen, LogOut, PlayCircle, Timer, Layers } from "lucide-react";
+import { BarChart3, BookOpen, LogOut, PlayCircle, Timer, Layers } from "lucide-react";
 
 type Mode = "practice" | "block" | "full_exam";
 
@@ -34,6 +34,7 @@ export default function Home() {
         <div className="text-sm font-semibold uppercase tracking-widest">NBME Practice</div>
         <div className="flex items-center gap-3 text-sm">
           <span className="text-navy-foreground/70">{user?.email}</span>
+          <Button variant="navy" size="sm" onClick={() => navigate("/analytics")}><BarChart3 className="size-4" /> Progress</Button>
           <Button variant="navy" size="sm" onClick={() => signOut()}><LogOut className="size-4" /> Sign out</Button>
         </div>
       </header>

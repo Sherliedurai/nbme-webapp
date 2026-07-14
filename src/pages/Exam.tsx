@@ -38,6 +38,7 @@ interface Persisted {
 function freshStates(n: number): QuestionState[] {
   return Array.from({ length: n }, (_, i) => ({
     selectedLetter: null,
+    firstLetter: null,
     struckLetters: [],
     flagged: false,
     secondsSpent: 0,
@@ -73,6 +74,7 @@ export default function Exam() {
   const submittingRef = useRef(false);
   const statesRef = useRef<QuestionState[]>([]);
   statesRef.current = states; // latest snapshot for use inside async submit
+  const attemptIdsRef = useRef<Map<string, string>>(new Map()); // question_id → attempt_id (for review tagging)
 
   // ── Load: restore an in-progress block or start a new one ──────────────────
   useEffect(() => {
@@ -156,10 +158,16 @@ export default function Exam() {
     setStates((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
   }, []);
 
-  const onSelect = useCallback(
-    (letter: string) => patchCurrent({ selectedLetter: letter }),
-    [patchCurrent]
-  );
+  const onSelect = useCallback((letter: string) => {
+    const idx = currentIndexRef.current;
+    setStates((prev) =>
+      prev.map((s, i) =>
+        i === idx
+          ? { ...s, selectedLetter: letter, firstLetter: s.firstLetter ?? letter } // capture first instinct once
+          : s
+      )
+    );
+  }, []);
   const onToggleStrike = useCallback(
     (letter: string) => {
       const idx = currentIndexRef.current;
@@ -207,12 +215,14 @@ export default function Exam() {
           return {
             question_id: q.id,
             selected_letter: selected,
+            first_letter: s.firstLetter,
+            changed: s.firstLetter != null && s.firstLetter !== selected,
             is_correct: isCorrect,
             seconds_spent: Math.round(s.secondsSpent),
             flagged: s.flagged,
           };
         });
-        await submitBlock(user.id, sessionId, attempts);
+        attemptIdsRef.current = await submitBlock(user.id, sessionId, attempts);
         clearPersisted(storageKey);
         const score = attempts.filter((a) => a.is_correct).length;
         setResult({ score, total: questions.length });
@@ -260,6 +270,8 @@ export default function Exam() {
           selectedLetter: s?.selectedLetter ?? null,
           secondsSpent: Math.round(s?.secondsSpent ?? 0),
           flagged: s?.flagged ?? false,
+          attemptId: attemptIdsRef.current.get(fq.id) ?? null,
+          errorTag: null,
         };
       });
       setReviewData({ questions: full, answers });

@@ -3,6 +3,9 @@ import type { FullQuestion } from "@/lib/types";
 import QuestionNavigator, { type NavCell } from "@/components/exam/QuestionNavigator";
 import VignettePanel from "@/components/exam/VignettePanel";
 import ExplanationPanel from "@/components/review/ExplanationPanel";
+import ErrorTagger from "@/components/review/ErrorTagger";
+import { updateAttemptErrorTag } from "@/lib/queries";
+import type { ErrorTag } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, LogOut } from "lucide-react";
 
@@ -10,6 +13,8 @@ export interface ReviewAnswer {
   selectedLetter: string | null;
   secondsSpent: number;
   flagged: boolean;
+  attemptId?: string | null; // for one-tap error tagging of misses
+  errorTag?: ErrorTag | null;
 }
 
 interface Props {
@@ -91,7 +96,17 @@ export default function BlockReview({ questions, answers, onExit, title = "Revie
               />
             )}
           </section>
-          <section className="min-h-0 flex-1 overflow-y-auto border-t lg:w-1/2 lg:border-l lg:border-t-0">
+          <section className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t p-0 lg:w-1/2 lg:border-l lg:border-t-0">
+            {q && a.selectedLetter !== q.correct_letter && (
+              <div className="px-4 pt-4">
+                <ErrorTagger
+                  key={q.id}
+                  value={a.errorTag ?? null}
+                  disabled={!a.attemptId}
+                  onTag={(tag) => updateAttemptErrorTag(a.attemptId!, tag)}
+                />
+              </div>
+            )}
             {q && <ExplanationPanel question={q} selectedLetter={a.selectedLetter} secondsSpent={a.secondsSpent} />}
           </section>
         </main>

@@ -25,6 +25,7 @@ export default function Practice() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
+  const [firstLetter, setFirstLetter] = useState<string | null>(null);
   const [struck, setStruck] = useState<string[]>([]);
   const [highlightHtml, setHighlightHtml] = useState<string | null>(null);
   const [strikeMode, setStrikeMode] = useState(false);
@@ -83,6 +84,8 @@ export default function Practice() {
       await recordAttempt(user.id, sessionId, {
         question_id: q.id,
         selected_letter: selected,
+        first_letter: firstLetter ?? selected,
+        changed: firstLetter != null && firstLetter !== selected,
         is_correct: isCorrect,
         seconds_spent: seconds,
         flagged,
@@ -90,7 +93,7 @@ export default function Practice() {
     } catch {
       /* non-fatal in practice */
     }
-  }, [q, selected, revealed, user, sessionId, flagged]);
+  }, [q, selected, revealed, user, sessionId, flagged, firstLetter]);
 
   const onNext = useCallback(async () => {
     if (index + 1 >= questions.length) {
@@ -100,6 +103,7 @@ export default function Practice() {
     }
     setIndex((i) => i + 1);
     setSelected(null);
+    setFirstLetter(null);
     setStruck([]);
     setHighlightHtml(null);
     setStrikeMode(false);
@@ -174,7 +178,7 @@ export default function Practice() {
               correctLetter={revealed ? q.correct_letter : null}
               onToggleStrikeMode={() => setStrikeMode((m) => !m)}
               onToggleFlag={() => setFlagged((f) => !f)}
-              onSelect={setSelected}
+              onSelect={(l) => { setSelected(l); setFirstLetter((f) => f ?? l); }}
               onToggleStrike={toggleStrike}
               onChangeHighlight={setHighlightHtml}
             />

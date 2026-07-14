@@ -1,6 +1,7 @@
 import { supabase } from "./supabase";
 import { PREVIEW } from "./preview";
 import type { AnswerKeyRow, BlockSession, ExamQuestion, FullQuestion, SessionMode } from "./types";
+import type { AnalyticsAttempt, ErrorTag } from "./analytics";
 
 const EXAM_COLUMNS =
   "id, block_number, q_number, vignette_text, options, clinical_image_url, system_tag, discipline_tag, question_type";
@@ -96,21 +97,29 @@ export async function createBlockSession(
 
 export interface AttemptInput {
   question_id: string;
-  selected_letter: string | null;
+  selected_letter: string | null; // final answer
+  first_letter: string | null; // first-instinct answer (captured once)
+  changed: boolean; // final != first
   is_correct: boolean;
   seconds_spent: number;
   flagged: boolean;
 }
 
-/** Write all attempts for a block and mark the session submitted/complete. */
+/**
+ * Write all attempts for a block and mark the session submitted/complete.
+ * Returns a question_id → attempt_id map so the review screen can tag misses.
+ */
 export async function submitBlock(
   userId: string,
   sessionId: string,
   attempts: AttemptInput[]
-): Promise<void> {
-  if (PREVIEW) return; // no-op in preview
+): Promise<Map<string, string>> {
+  if (PREVIEW) return new Map(attempts.map((a) => [a.question_id, `preview-attempt-${a.question_id}`]));
   const rows = attempts.map((a) => ({ ...a, user_id: userId, block_session_id: sessionId }));
-  const { error: attemptsError } = await supabase.from("attempts").insert(rows);
+  const { data, error: attemptsError } = await supabase
+    .from("attempts")
+    .insert(rows)
+    .select("id, question_id");
   if (attemptsError) throw attemptsError;
 
   const { error: sessionError } = await supabase
@@ -118,14 +127,31 @@ export async function submitBlock(
     .update({ submitted_at: new Date().toISOString(), is_complete: true })
     .eq("id", sessionId);
   if (sessionError) throw sessionError;
+
+  const map = new Map<string, string>();
+  for (const r of (data ?? []) as { id: string; question_id: string }[]) map.set(r.question_id, r.id);
+  return map;
 }
 
-/** Record a single attempt live (practice mode reveals per question). */
-export async function recordAttempt(userId: string, sessionId: string, a: AttemptInput): Promise<void> {
-  if (PREVIEW) return;
-  const { error } = await supabase
+/**
+ * Record a single attempt live (practice / full-exam per-question write).
+ * Returns the new attempt id (null in preview / on soft failure) for later tagging.
+ */
+export async function recordAttempt(userId: string, sessionId: string, a: AttemptInput): Promise<string | null> {
+  if (PREVIEW) return `preview-attempt-${a.question_id}`;
+  const { data, error } = await supabase
     .from("attempts")
-    .insert({ ...a, user_id: userId, block_session_id: sessionId });
+    .insert({ ...a, user_id: userId, block_session_id: sessionId })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data?.id ?? null;
+}
+
+/** Set (or clear) the post-exam error classification on a single attempt. */
+export async function updateAttemptErrorTag(attemptId: string, tag: ErrorTag | null): Promise<void> {
+  if (PREVIEW || attemptId.startsWith("preview-")) return;
+  const { error } = await supabase.from("attempts").update({ error_tag: tag }).eq("id", attemptId);
   if (error) throw error;
 }
 
@@ -137,6 +163,80 @@ export async function completeSession(sessionId: string): Promise<void> {
     .update({ submitted_at: new Date().toISOString(), is_complete: true })
     .eq("id", sessionId);
   if (error) throw error;
+}
+
+/**
+ * Every attempt for a user, joined to the facts the dashboard needs to classify
+ * it (answer key, position, block, tags) and to its owning session's mode.
+ * RLS keeps this to the user's own rows; questions is world-readable to authed.
+ */
+export async function getAttemptsWithQuestions(userId: string): Promise<AnalyticsAttempt[]> {
+  if (PREVIEW) return previewAnalyticsAttempts();
+  const { data, error } = await supabase
+    .from("attempts")
+    .select(
+      "selected_letter, first_letter, changed, error_tag, seconds_spent, " +
+        "questions!inner ( correct_letter, q_number, block_number, discipline_tag, system_tag ), " +
+        "block_sessions ( mode )"
+    )
+    .eq("user_id", userId);
+  if (error) throw error;
+  return ((data ?? []) as any[]).map((r) => {
+    const q = Array.isArray(r.questions) ? r.questions[0] : r.questions;
+    const s = Array.isArray(r.block_sessions) ? r.block_sessions[0] : r.block_sessions;
+    return {
+      firstLetter: r.first_letter ?? null,
+      finalLetter: r.selected_letter ?? null,
+      correctLetter: q?.correct_letter ?? "",
+      changed: !!r.changed,
+      errorTag: (r.error_tag ?? null) as ErrorTag | null,
+      qNumber: q?.q_number ?? 0,
+      blockNumber: q?.block_number ?? 0,
+      discipline: q?.discipline_tag ?? "—",
+      system: q?.system_tag ?? "—",
+      mode: s?.mode ?? null,
+      secondsSpent: r.seconds_spent ?? null,
+    } as AnalyticsAttempt;
+  });
+}
+
+/** Deterministic synthetic dataset so /analytics renders under VITE_PREVIEW. */
+function previewAnalyticsAttempts(): AnalyticsAttempt[] {
+  const LETTERS = ["A", "B", "C", "D", "E"];
+  const disciplines = ["Physiology", "Pathology", "Pharmacology", "Biochemistry", "Behavioral Sciences"];
+  const systems = ["Cardiovascular", "Renal", "Neurology", "Endocrine", "Multisystem"];
+  const tags = ["knowledge_gap", "discriminator_miss", "primary_secondary", "process_error"] as const;
+  const out: AnalyticsAttempt[] = [];
+  // Two full-exam blocks so stamina + pacing have shape.
+  for (let block = 1; block <= 2; block++) {
+    for (let i = 0; i < 20; i++) {
+      const q = (block - 1) * 20 + i + 1;
+      const correct = LETTERS[(q * 3) % 5];
+      // fatigue: later positions + later block miss more often
+      const missBias = (i >= 15 ? 2 : 0) + (block === 2 ? 1 : 0);
+      const finalWrong = (q + missBias) % 4 === 0;
+      const final = finalWrong ? LETTERS[(q + 1) % 5] : correct;
+      // ~1 in 4 answers changed; skew a few of them correct→incorrect
+      const didChange = q % 4 === 0;
+      const first = didChange
+        ? (q % 8 === 0 ? correct : LETTERS[(q + 2) % 5]) // some changed away from the right answer
+        : final;
+      out.push({
+        firstLetter: first,
+        finalLetter: final,
+        correctLetter: correct,
+        changed: first !== final,
+        errorTag: final !== correct ? tags[q % tags.length] : null,
+        qNumber: q,
+        blockNumber: block,
+        discipline: disciplines[q % disciplines.length],
+        system: systems[q % systems.length],
+        mode: "full_exam",
+        secondsSpent: 40 + ((q * 7) % 60),
+      });
+    }
+  }
+  return out;
 }
 
 /** Short-lived signed URL for a private clinical-image object path. */
