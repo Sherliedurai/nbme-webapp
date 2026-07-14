@@ -114,6 +114,15 @@ def label_of(text):
         cand = m.group(1).strip().rstrip(",").strip()
         if cand and len(cand) > 3 and cand.lower() not in LABEL_JUNK:
             return cand[:55]
+    # Numbered banks (Genetics/Ethics/Biostat): "The correct answer is X. <Concept> is…"
+    m = re.search(r"correct answer is\s+[A-Za-z][.):]?\s+([A-Z][A-Za-z0-9 /'-]{3,45})", t)
+    if m:
+        cand = re.split(r"\s+(?:is|are|was|were|refers|occurs|describes|represents)\s+", m.group(1))[0]
+        cand = " ".join(cand.split()[:6]).strip()
+        # skip pronoun/article starts (e.g. "This patient's", "The diagnosis") — fall to vignette
+        if len(cand) > 3 and cand.lower() not in LABEL_JUNK \
+                and not re.match(r"^(This|The|These|Those|It|He|She|They|Patient|A |An )\b", cand):
+            return cand[:50]
     head = re.split(r"[;?]", t)[0]
     return " ".join(head.split()[:9])[:60]
 

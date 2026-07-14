@@ -22,8 +22,8 @@ dist/
 preview-shots/
 
 # Review page embeds licensed content
-enrichment_review_block1.html
-enrichment_review_block1_results.json
+enrichment_review_*.html
+enrichment_review_*results.json
 
 # Third-party Mehlman HY PDFs + derived markdown/index (not ours to commit)
 Mehlman HY pdfs/
