@@ -19,11 +19,6 @@ export interface FormSummary {
  * (block_number is per-form, so blockCount = the form's largest block.)
  */
 export async function getForms(): Promise<FormSummary[]> {
-  if (PREVIEW) {
-    const { previewFullQuestions } = await import("@/mock/block1");
-    const blocks = new Set(previewFullQuestions.map((q) => q.block_number));
-    return [{ form: 31, blockCount: Math.max(...blocks), questionCount: previewFullQuestions.length }];
-  }
   const { data, error } = await supabase.from("questions").select("nbme_form, block_number");
   if (error) throw error;
   const byForm = new Map<number, { blockCount: number; questionCount: number }>();
@@ -43,10 +38,6 @@ export async function getForms(): Promise<FormSummary[]> {
  * Used by Practice (immediate reveal) and Review — NOT during a live block/exam.
  */
 export async function getFullQuestions(form: number, blockNumber: number): Promise<FullQuestion[]> {
-  if (PREVIEW) {
-    const { previewFullQuestions } = await import("@/mock/block1");
-    return previewFullQuestions.filter((q) => q.nbme_form === form && q.block_number === blockNumber);
-  }
   const { data, error } = await supabase
     .from("questions")
     .select(FULL_COLUMNS)
@@ -59,10 +50,6 @@ export async function getFullQuestions(form: number, blockNumber: number): Promi
 
 /** Number of blocks in a form (for "Block X of Y" and full-exam sweeps). */
 export async function getBlockCount(form: number): Promise<number> {
-  if (PREVIEW) {
-    const { previewFullQuestions } = await import("@/mock/block1");
-    return Math.max(0, ...previewFullQuestions.filter((q) => q.nbme_form === form).map((q) => q.block_number));
-  }
   const { data, error } = await supabase
     .from("questions")
     .select("block_number")
@@ -75,10 +62,6 @@ export async function getBlockCount(form: number): Promise<number> {
 
 /** Exam-safe questions for a block of a form, q_number order. No answer key. */
 export async function getExamQuestions(form: number, blockNumber: number): Promise<ExamQuestion[]> {
-  if (PREVIEW) {
-    const { previewExamQuestions } = await import("@/mock/block1");
-    return previewExamQuestions.filter((q) => q.nbme_form === form && q.block_number === blockNumber);
-  }
   const { data, error } = await supabase
     .from("questions")
     .select(EXAM_COLUMNS)
@@ -92,10 +75,6 @@ export async function getExamQuestions(form: number, blockNumber: number): Promi
 /** Answer key for scoring — fetched ONLY at submit time. */
 export async function getAnswerKey(questionIds: string[]): Promise<Map<string, string>> {
   if (questionIds.length === 0) return new Map();
-  if (PREVIEW) {
-    const { previewAnswerKey } = await import("@/mock/block1");
-    return new Map(questionIds.map((id) => [id, previewAnswerKey.get(id) ?? ""]));
-  }
   const { data, error } = await supabase
     .from("questions")
     .select("id, correct_letter")
@@ -322,20 +301,6 @@ export async function getReviewQueue(
   questionIds: string[]
 ): Promise<{ questions: FullQuestion[]; answers: ReviewAnswer[] }> {
   if (questionIds.length === 0) return { questions: [], answers: [] };
-  if (PREVIEW) {
-    const { previewFullQuestions } = await import("@/mock/block1");
-    const byId = new Map(previewFullQuestions.map((q) => [q.id, q]));
-    const questions: FullQuestion[] = [];
-    const answers: ReviewAnswer[] = [];
-    for (const id of questionIds) {
-      const q = byId.get(id);
-      if (!q) continue;
-      const wrong = q.options.find((o) => o.letter !== q.correct_letter)?.letter ?? null;
-      questions.push(q);
-      answers.push({ selectedLetter: wrong, secondsSpent: 48, flagged: false, attemptId: `preview-a-${id}`, errorTag: null });
-    }
-    return { questions, answers };
-  }
   const { data: qs, error: qErr } = await supabase.from("questions").select(FULL_COLUMNS).in("id", questionIds);
   if (qErr) throw qErr;
   const { data: atts, error: aErr } = await supabase
@@ -377,15 +342,9 @@ export interface FilterFacets {
 
 /** Distinct tag values + counts across the bank — drives the custom-block filters. */
 export async function getFilterFacets(): Promise<FilterFacets> {
-  const rows = PREVIEW
-    ? (await import("@/mock/block1")).previewFullQuestions.map((q) => ({
-        system_tag: q.system_tag, discipline_tag: q.discipline_tag, question_type: q.question_type,
-      }))
-    : await (async () => {
-        const { data, error } = await supabase.from("questions").select("system_tag, discipline_tag, question_type");
-        if (error) throw error;
-        return (data ?? []) as { system_tag: string; discipline_tag: string; question_type: string }[];
-      })();
+  const { data, error } = await supabase.from("questions").select("system_tag, discipline_tag, question_type");
+  if (error) throw error;
+  const rows = (data ?? []) as { system_tag: string; discipline_tag: string; question_type: string }[];
   const tally = (pick: (r: any) => string): FilterFacet[] => {
     const m = new Map<string, number>();
     for (const r of rows) { const v = pick(r) || "—"; m.set(v, (m.get(v) ?? 0) + 1); }
@@ -402,10 +361,6 @@ export interface QuestionFilter {
 
 /** Count of questions matching a custom-block filter (for the live preview). */
 export async function countQuestionsByFilter(f: QuestionFilter): Promise<number> {
-  if (PREVIEW) {
-    const { previewFullQuestions } = await import("@/mock/block1");
-    return previewFullQuestions.filter((q) => matchesFilter(q, f)).length;
-  }
   let query = supabase.from("questions").select("id", { count: "exact", head: true });
   if (f.system) query = query.eq("system_tag", f.system);
   if (f.discipline) query = query.eq("discipline_tag", f.discipline);
@@ -415,18 +370,8 @@ export async function countQuestionsByFilter(f: QuestionFilter): Promise<number>
   return count ?? 0;
 }
 
-function matchesFilter(q: FullQuestion, f: QuestionFilter): boolean {
-  return (!f.system || q.system_tag === f.system) &&
-    (!f.discipline || q.discipline_tag === f.discipline) &&
-    (!f.questionType || q.question_type === f.questionType);
-}
-
 /** Full questions matching a filter, capped at `limit` (custom practice block). */
 export async function getQuestionsByFilter(f: QuestionFilter, limit: number): Promise<FullQuestion[]> {
-  if (PREVIEW) {
-    const { previewFullQuestions } = await import("@/mock/block1");
-    return previewFullQuestions.filter((q) => matchesFilter(q, f)).slice(0, limit);
-  }
   let query = supabase.from("questions").select(FULL_COLUMNS);
   if (f.system) query = query.eq("system_tag", f.system);
   if (f.discipline) query = query.eq("discipline_tag", f.discipline);
@@ -470,10 +415,6 @@ export async function setExplanationUnhelpful(userId: string, questionId: string
 
 /** Short-lived signed URL for a private clinical-image object path. */
 export async function getSignedImageUrl(objectPath: string): Promise<string | null> {
-  if (PREVIEW) {
-    const { previewImageUrls } = await import("@/mock/block1");
-    return previewImageUrls[objectPath] ?? null;
-  }
   const { data, error } = await supabase.storage
     .from("clinical-images")
     .createSignedUrl(objectPath, 60 * 60); // 1 hour
