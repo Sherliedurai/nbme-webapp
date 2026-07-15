@@ -32,3 +32,7 @@ import/mehlman/
 
 # SQL query-output CSVs (contain licensed content + user_id)
 verify_live_data_*.csv
+
+# Anki export artifacts (licensed-derived, personal use)
+*.apkg
+nbme-anki-selection*.json

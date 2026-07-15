@@ -1,51 +1,88 @@
 import { supabase } from "./supabase";
 import { PREVIEW } from "./preview";
-import type { AnswerKeyRow, BlockSession, ExamQuestion, FullQuestion, SessionMode } from "./types";
+import type { AnswerKeyRow, BlockSession, ExamQuestion, FullQuestion, ReviewAnswer, SessionMode } from "./types";
 import type { AnalyticsAttempt, ErrorTag } from "./analytics";
 
 const EXAM_COLUMNS =
-  "id, block_number, q_number, vignette_text, options, clinical_image_url, system_tag, discipline_tag, question_type";
+  "id, nbme_form, block_number, q_number, vignette_text, options, clinical_image_url, system_tag, discipline_tag, question_type";
 const FULL_COLUMNS = EXAM_COLUMNS + ", correct_letter, source_explanation, enriched_explanation";
 
+/** One NBME form and how much it holds — drives the Home form picker. */
+export interface FormSummary {
+  form: number;
+  blockCount: number; // highest block_number in the form
+  questionCount: number;
+}
+
 /**
- * Full questions for a block (answer + explanations + enrichment). Used by
- * Practice (immediate reveal) and Review — NOT during a live block/exam.
+ * Every NBME form in the bank with its block/question counts, ascending by form.
+ * (block_number is per-form, so blockCount = the form's largest block.)
  */
-export async function getFullQuestions(blockNumber: number): Promise<FullQuestion[]> {
+export async function getForms(): Promise<FormSummary[]> {
   if (PREVIEW) {
     const { previewFullQuestions } = await import("@/mock/block1");
-    return previewFullQuestions.filter((q) => q.block_number === blockNumber);
+    const blocks = new Set(previewFullQuestions.map((q) => q.block_number));
+    return [{ form: 31, blockCount: Math.max(...blocks), questionCount: previewFullQuestions.length }];
+  }
+  const { data, error } = await supabase.from("questions").select("nbme_form, block_number");
+  if (error) throw error;
+  const byForm = new Map<number, { blockCount: number; questionCount: number }>();
+  for (const r of (data ?? []) as { nbme_form: number; block_number: number }[]) {
+    let f = byForm.get(r.nbme_form);
+    if (!f) { f = { blockCount: 0, questionCount: 0 }; byForm.set(r.nbme_form, f); }
+    f.questionCount++;
+    if (r.block_number > f.blockCount) f.blockCount = r.block_number;
+  }
+  return [...byForm.entries()]
+    .map(([form, v]) => ({ form, ...v }))
+    .sort((a, b) => a.form - b.form);
+}
+
+/**
+ * Full questions for a block of a form (answer + explanations + enrichment).
+ * Used by Practice (immediate reveal) and Review — NOT during a live block/exam.
+ */
+export async function getFullQuestions(form: number, blockNumber: number): Promise<FullQuestion[]> {
+  if (PREVIEW) {
+    const { previewFullQuestions } = await import("@/mock/block1");
+    return previewFullQuestions.filter((q) => q.nbme_form === form && q.block_number === blockNumber);
   }
   const { data, error } = await supabase
     .from("questions")
     .select(FULL_COLUMNS)
+    .eq("nbme_form", form)
     .eq("block_number", blockNumber)
     .order("q_number", { ascending: true });
   if (error) throw error;
   return (data ?? []) as unknown as FullQuestion[];
 }
 
-/** Total number of distinct blocks in the bank (for "Block X of Y"). */
-export async function getBlockCount(): Promise<number> {
-  if (PREVIEW) return 1;
+/** Number of blocks in a form (for "Block X of Y" and full-exam sweeps). */
+export async function getBlockCount(form: number): Promise<number> {
+  if (PREVIEW) {
+    const { previewFullQuestions } = await import("@/mock/block1");
+    return Math.max(0, ...previewFullQuestions.filter((q) => q.nbme_form === form).map((q) => q.block_number));
+  }
   const { data, error } = await supabase
     .from("questions")
     .select("block_number")
+    .eq("nbme_form", form)
     .order("block_number", { ascending: false })
     .limit(1);
   if (error) throw error;
   return data?.[0]?.block_number ?? 0;
 }
 
-/** Exam-safe questions for a block, in q_number order. No answer key included. */
-export async function getExamQuestions(blockNumber: number): Promise<ExamQuestion[]> {
+/** Exam-safe questions for a block of a form, q_number order. No answer key. */
+export async function getExamQuestions(form: number, blockNumber: number): Promise<ExamQuestion[]> {
   if (PREVIEW) {
     const { previewExamQuestions } = await import("@/mock/block1");
-    return previewExamQuestions.filter((q) => q.block_number === blockNumber);
+    return previewExamQuestions.filter((q) => q.nbme_form === form && q.block_number === blockNumber);
   }
   const { data, error } = await supabase
     .from("questions")
     .select(EXAM_COLUMNS)
+    .eq("nbme_form", form)
     .eq("block_number", blockNumber)
     .order("q_number", { ascending: true });
   if (error) throw error;
@@ -69,16 +106,18 @@ export async function getAnswerKey(questionIds: string[]): Promise<Map<string, s
   return map;
 }
 
-/** Create a block session owned by the current user. */
+/** Create a block session owned by the current user, stamped with its form. */
 export async function createBlockSession(
   userId: string,
-  blockNumber: number,
+  form: number | null,
+  blockNumber: number | null,
   mode: SessionMode = "block"
 ): Promise<BlockSession> {
   if (PREVIEW) {
     return {
-      id: `preview-session-${blockNumber}`,
+      id: `preview-session-${form}-${blockNumber}`,
       user_id: userId,
+      nbme_form: form,
       block_number: blockNumber,
       mode,
       started_at: new Date().toISOString(),
@@ -88,7 +127,7 @@ export async function createBlockSession(
   }
   const { data, error } = await supabase
     .from("block_sessions")
-    .insert({ user_id: userId, block_number: blockNumber, mode })
+    .insert({ user_id: userId, nbme_form: form, block_number: blockNumber, mode })
     .select()
     .single();
   if (error) throw error;
@@ -103,6 +142,7 @@ export interface AttemptInput {
   is_correct: boolean;
   seconds_spent: number;
   flagged: boolean;
+  is_review?: boolean; // cold re-attempt from the review deck — excluded from analytics
 }
 
 /**
@@ -141,18 +181,36 @@ export async function recordAttempt(userId: string, sessionId: string, a: Attemp
   if (PREVIEW) return `preview-attempt-${a.question_id}`;
   const { data, error } = await supabase
     .from("attempts")
-    .insert({ ...a, user_id: userId, block_session_id: sessionId })
+    .insert({ is_review: false, ...a, user_id: userId, block_session_id: sessionId })
     .select("id")
     .single();
   if (error) throw error;
   return data?.id ?? null;
 }
 
-/** Set (or clear) the post-exam error classification on a single attempt. */
+/**
+ * Set (or clear) the post-exam error classification on a single attempt.
+ *
+ * Uses `.select()` after the update and asserts EXACTLY ONE row came back. A
+ * bare update reports success even when it matches 0 rows (wrong id, or RLS
+ * silently filtering the row) — the same silent 0-row write that has bitten
+ * this project. Returning-zero now throws, so ErrorTagger rolls back and shows
+ * "Couldn't save" instead of pretending the tag persisted. RLS still gates the
+ * row to the owning user; a mismatch surfaces here instead of being lost.
+ */
 export async function updateAttemptErrorTag(attemptId: string, tag: ErrorTag | null): Promise<void> {
   if (PREVIEW || attemptId.startsWith("preview-")) return;
-  const { error } = await supabase.from("attempts").update({ error_tag: tag }).eq("id", attemptId);
+  const { data, error } = await supabase
+    .from("attempts")
+    .update({ error_tag: tag })
+    .eq("id", attemptId)
+    .select("id, error_tag");
   if (error) throw error;
+  if (!data || data.length !== 1) {
+    throw new Error(
+      `error_tag write affected ${data?.length ?? 0} rows for attempt ${attemptId} (expected 1) — not saved.`
+    );
+  }
 }
 
 /** Mark a session submitted/complete (practice finishes without a batch submit). */
@@ -175,25 +233,32 @@ export async function getAttemptsWithQuestions(userId: string): Promise<Analytic
   const { data, error } = await supabase
     .from("attempts")
     .select(
-      "selected_letter, first_letter, changed, error_tag, seconds_spent, " +
-        "questions!inner ( correct_letter, q_number, block_number, discipline_tag, system_tag ), " +
+      "id, question_id, created_at, selected_letter, first_letter, changed, error_tag, seconds_spent, flagged, " +
+        "questions!inner ( correct_letter, q_number, nbme_form, block_number, discipline_tag, system_tag, question_type ), " +
         "block_sessions ( mode )"
     )
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("is_review", false); // cold re-attempts never touch score/accuracy/trend analytics
   if (error) throw error;
   return ((data ?? []) as any[]).map((r) => {
     const q = Array.isArray(r.questions) ? r.questions[0] : r.questions;
     const s = Array.isArray(r.block_sessions) ? r.block_sessions[0] : r.block_sessions;
     return {
+      questionId: r.question_id,
+      attemptId: r.id ?? null,
+      createdAt: r.created_at ?? "",
       firstLetter: r.first_letter ?? null,
       finalLetter: r.selected_letter ?? null,
       correctLetter: q?.correct_letter ?? "",
       changed: !!r.changed,
       errorTag: (r.error_tag ?? null) as ErrorTag | null,
+      flagged: !!r.flagged,
       qNumber: q?.q_number ?? 0,
+      nbmeForm: q?.nbme_form ?? 0,
       blockNumber: q?.block_number ?? 0,
       discipline: q?.discipline_tag ?? "—",
       system: q?.system_tag ?? "—",
+      questionType: q?.question_type ?? "—",
       mode: s?.mode ?? null,
       secondsSpent: r.seconds_spent ?? null,
     } as AnalyticsAttempt;
@@ -205,6 +270,7 @@ function previewAnalyticsAttempts(): AnalyticsAttempt[] {
   const LETTERS = ["A", "B", "C", "D", "E"];
   const disciplines = ["Physiology", "Pathology", "Pharmacology", "Biochemistry", "Behavioral Sciences"];
   const systems = ["Cardiovascular", "Renal", "Neurology", "Endocrine", "Multisystem"];
+  const qtypes = ["mechanism", "diagnosis", "next-step", "interpretation", "association"];
   const tags = ["knowledge_gap", "discriminator_miss", "primary_secondary", "process_error"] as const;
   const out: AnalyticsAttempt[] = [];
   // Two full-exam blocks so stamina + pacing have shape.
@@ -222,21 +288,184 @@ function previewAnalyticsAttempts(): AnalyticsAttempt[] {
         ? (q % 8 === 0 ? correct : LETTERS[(q + 2) % 5]) // some changed away from the right answer
         : final;
       out.push({
+        questionId: `preview-${q}`,
+        attemptId: `preview-a-${q}`,
+        createdAt: new Date(Date.UTC(2026, 5, block, 0, q)).toISOString(),
         firstLetter: first,
         finalLetter: final,
         correctLetter: correct,
         changed: first !== final,
         errorTag: final !== correct ? tags[q % tags.length] : null,
+        flagged: q % 9 === 0,
         qNumber: q,
+        nbmeForm: 31,
         blockNumber: block,
         discipline: disciplines[q % disciplines.length],
         system: systems[q % systems.length],
+        questionType: qtypes[q % qtypes.length],
         mode: "full_exam",
         secondsSpent: 40 + ((q * 7) % 60),
       });
     }
   }
   return out;
+}
+
+/**
+ * A set of questions with the user's MOST RECENT attempt at each — powers the
+ * review QUEUE opened from the wrong-answer filter. Returned in the SAME ORDER
+ * as `questionIds` (so the caller controls queue order). Questions with no
+ * attempt come back with a null answer; ids not found are skipped.
+ */
+export async function getReviewQueue(
+  userId: string,
+  questionIds: string[]
+): Promise<{ questions: FullQuestion[]; answers: ReviewAnswer[] }> {
+  if (questionIds.length === 0) return { questions: [], answers: [] };
+  if (PREVIEW) {
+    const { previewFullQuestions } = await import("@/mock/block1");
+    const byId = new Map(previewFullQuestions.map((q) => [q.id, q]));
+    const questions: FullQuestion[] = [];
+    const answers: ReviewAnswer[] = [];
+    for (const id of questionIds) {
+      const q = byId.get(id);
+      if (!q) continue;
+      const wrong = q.options.find((o) => o.letter !== q.correct_letter)?.letter ?? null;
+      questions.push(q);
+      answers.push({ selectedLetter: wrong, secondsSpent: 48, flagged: false, attemptId: `preview-a-${id}`, errorTag: null });
+    }
+    return { questions, answers };
+  }
+  const { data: qs, error: qErr } = await supabase.from("questions").select(FULL_COLUMNS).in("id", questionIds);
+  if (qErr) throw qErr;
+  const { data: atts, error: aErr } = await supabase
+    .from("attempts")
+    .select("id, question_id, selected_letter, seconds_spent, flagged, error_tag, created_at")
+    .eq("user_id", userId)
+    .in("question_id", questionIds)
+    .order("created_at", { ascending: false });
+  if (aErr) throw aErr;
+  const latest = new Map<string, any>();
+  for (const a of (atts ?? []) as any[]) if (!latest.has(a.question_id)) latest.set(a.question_id, a);
+  const qById = new Map(((qs ?? []) as any[]).map((q) => [q.id, q as unknown as FullQuestion]));
+  const questions: FullQuestion[] = [];
+  const answers: ReviewAnswer[] = [];
+  for (const id of questionIds) {
+    const q = qById.get(id);
+    if (!q) continue;
+    const a = latest.get(id);
+    questions.push(q);
+    answers.push({
+      selectedLetter: a?.selected_letter ?? null,
+      secondsSpent: a?.seconds_spent ?? 0,
+      flagged: !!a?.flagged,
+      attemptId: a?.id ?? null,
+      errorTag: (a?.error_tag ?? null) as ErrorTag | null,
+    });
+  }
+  return { questions, answers };
+}
+
+// ── Custom block builder ─────────────────────────────────────────────────────
+
+export interface FilterFacet { value: string; count: number }
+export interface FilterFacets {
+  system: FilterFacet[];
+  discipline: FilterFacet[];
+  questionType: FilterFacet[];
+}
+
+/** Distinct tag values + counts across the bank — drives the custom-block filters. */
+export async function getFilterFacets(): Promise<FilterFacets> {
+  const rows = PREVIEW
+    ? (await import("@/mock/block1")).previewFullQuestions.map((q) => ({
+        system_tag: q.system_tag, discipline_tag: q.discipline_tag, question_type: q.question_type,
+      }))
+    : await (async () => {
+        const { data, error } = await supabase.from("questions").select("system_tag, discipline_tag, question_type");
+        if (error) throw error;
+        return (data ?? []) as { system_tag: string; discipline_tag: string; question_type: string }[];
+      })();
+  const tally = (pick: (r: any) => string): FilterFacet[] => {
+    const m = new Map<string, number>();
+    for (const r of rows) { const v = pick(r) || "—"; m.set(v, (m.get(v) ?? 0) + 1); }
+    return [...m.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => a.value.localeCompare(b.value));
+  };
+  return { system: tally((r) => r.system_tag), discipline: tally((r) => r.discipline_tag), questionType: tally((r) => r.question_type) };
+}
+
+export interface QuestionFilter {
+  system?: string;
+  discipline?: string;
+  questionType?: string;
+}
+
+/** Count of questions matching a custom-block filter (for the live preview). */
+export async function countQuestionsByFilter(f: QuestionFilter): Promise<number> {
+  if (PREVIEW) {
+    const { previewFullQuestions } = await import("@/mock/block1");
+    return previewFullQuestions.filter((q) => matchesFilter(q, f)).length;
+  }
+  let query = supabase.from("questions").select("id", { count: "exact", head: true });
+  if (f.system) query = query.eq("system_tag", f.system);
+  if (f.discipline) query = query.eq("discipline_tag", f.discipline);
+  if (f.questionType) query = query.eq("question_type", f.questionType);
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
+
+function matchesFilter(q: FullQuestion, f: QuestionFilter): boolean {
+  return (!f.system || q.system_tag === f.system) &&
+    (!f.discipline || q.discipline_tag === f.discipline) &&
+    (!f.questionType || q.question_type === f.questionType);
+}
+
+/** Full questions matching a filter, capped at `limit` (custom practice block). */
+export async function getQuestionsByFilter(f: QuestionFilter, limit: number): Promise<FullQuestion[]> {
+  if (PREVIEW) {
+    const { previewFullQuestions } = await import("@/mock/block1");
+    return previewFullQuestions.filter((q) => matchesFilter(q, f)).slice(0, limit);
+  }
+  let query = supabase.from("questions").select(FULL_COLUMNS);
+  if (f.system) query = query.eq("system_tag", f.system);
+  if (f.discipline) query = query.eq("discipline_tag", f.discipline);
+  if (f.questionType) query = query.eq("question_type", f.questionType);
+  const { data, error } = await query.order("nbme_form").order("q_number").limit(limit);
+  if (error) throw error;
+  return (data ?? []) as unknown as FullQuestion[];
+}
+
+// ── "This explanation didn't help" feedback ──────────────────────────────────
+
+/** Which of these questions the user has flagged as unhelpful. */
+export async function getUnhelpfulSet(userId: string, questionIds: string[]): Promise<Set<string>> {
+  if (PREVIEW || questionIds.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from("explanation_feedback")
+    .select("question_id")
+    .eq("user_id", userId)
+    .in("question_id", questionIds);
+  if (error) throw error;
+  return new Set(((data ?? []) as { question_id: string }[]).map((r) => r.question_id));
+}
+
+/** Toggle the unhelpful flag. Insert on `on`, delete on `off`. Idempotent-ish. */
+export async function setExplanationUnhelpful(userId: string, questionId: string, on: boolean): Promise<void> {
+  if (PREVIEW) return;
+  if (on) {
+    const { error } = await supabase
+      .from("explanation_feedback")
+      .upsert({ user_id: userId, question_id: questionId }, { onConflict: "user_id,question_id" });
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("explanation_feedback")
+      .delete()
+      .eq("user_id", userId)
+      .eq("question_id", questionId);
+    if (error) throw error;
+  }
 }
 
 /** Short-lived signed URL for a private clinical-image object path. */

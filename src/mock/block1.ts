@@ -31,6 +31,7 @@ const enrichByQ = new Map<number, EnrichedExplanation>(
 // Exam-safe projection (no correct_letter / explanations) — mirrors production.
 export const previewExamQuestions: ExamQuestion[] = items.map((it) => ({
   id: `preview-${it.q_number}`,
+  nbme_form: 31,
   block_number: it.block_number,
   q_number: it.q_number,
   vignette_text: it.vignette_text,
@@ -48,6 +49,7 @@ export const previewAnswerKey = new Map<string, string>(
 // Full questions (answer + explanation + enrichment) for Practice / Review preview.
 export const previewFullQuestions: FullQuestion[] = items.map((it) => ({
   id: `preview-${it.q_number}`,
+  nbme_form: 31,
   block_number: it.block_number,
   q_number: it.q_number,
   vignette_text: it.vignette_text,

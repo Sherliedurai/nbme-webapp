@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import type { FullQuestion } from "@/lib/types";
 import { cn, formatDuration } from "@/lib/utils";
 import { CheckCircle2, XCircle } from "lucide-react";
+import ExplanationFeedback from "./ExplanationFeedback";
 
 /** Render **bold** key words in enrichment text. */
 function bold(text: string): ReactNode[] {
@@ -63,6 +64,7 @@ export default function ExplanationPanel({ question, selectedLetter, secondsSpen
         {secondsSpent != null && (
           <span className="text-xs text-muted-foreground">Time: {formatDuration(secondsSpent)}</span>
         )}
+        <ExplanationFeedback questionId={question.id} />
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4 text-[0.95rem] leading-relaxed text-slate-800">

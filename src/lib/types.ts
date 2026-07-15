@@ -1,3 +1,5 @@
+import type { ErrorTag } from "./analytics";
+
 // ── Database row shapes (mirror the Supabase schema) ────────────────────────
 
 export interface QuestionOption {
@@ -12,7 +14,8 @@ export interface QuestionOption {
  */
 export interface ExamQuestion {
   id: string;
-  block_number: number;
+  nbme_form: number; // which NBME form (e.g. 31)
+  block_number: number; // block WITHIN the form (1..10)
   q_number: number;
   vignette_text: string;
   options: QuestionOption[];
@@ -35,11 +38,12 @@ export interface FullQuestion extends ExamQuestion {
   enriched_explanation: EnrichedExplanation | null;
 }
 
-export type SessionMode = "block" | "full_exam" | "practice";
+export type SessionMode = "block" | "full_exam" | "practice" | "custom";
 
 export interface BlockSession {
   id: string;
   user_id: string;
+  nbme_form: number | null; // form sat this session
   block_number: number | null;
   mode: SessionMode;
   started_at: string;
@@ -87,6 +91,15 @@ export interface EnrichedExplanation {
   knockdowns: Knockdown[];
   high_yield: GroundedFact[];
   how_they_test: HowTheyTest[];
+}
+
+/** The user's answer to one question as shown in the review queue. */
+export interface ReviewAnswer {
+  selectedLetter: string | null;
+  secondsSpent: number;
+  flagged: boolean;
+  attemptId?: string | null; // for one-tap error tagging of misses
+  errorTag?: ErrorTag | null;
 }
 
 // ── In-memory per-question state during a live block ────────────────────────

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   completeSession,
@@ -19,7 +19,7 @@ import ExamBottomBar from "@/components/exam/ExamBottomBar";
 import LabValuesModal from "@/components/exam/LabValuesModal";
 import CalculatorModal from "@/components/exam/CalculatorModal";
 import SubmitReviewModal from "@/components/exam/SubmitReviewModal";
-import BlockReview, { type ReviewAnswer } from "@/components/review/BlockReview";
+import ReviewQueue, { type ReviewAnswer } from "@/components/review/ReviewQueue";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Coffee } from "lucide-react";
@@ -43,6 +43,8 @@ function freshStates(n: number): QuestionState[] {
 }
 
 export default function FullExam() {
+  const { form: formParam } = useParams();
+  const form = Number(formParam);
   const { user } = useAuth();
   const navigate = useNavigate();
 
@@ -56,6 +58,7 @@ export default function FullExam() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [deadline, setDeadline] = useState<number>(() => Date.now() + BLOCK_MS);
   const [strikeMode, setStrikeMode] = useState(false);
+  const [highlightMode, setHighlightMode] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [modal, setModal] = useState<"lab" | "calc" | null>(null);
   const [showSubmitReview, setShowSubmitReview] = useState(false);
@@ -73,27 +76,28 @@ export default function FullExam() {
   const endingRef = useRef(false);
 
   const loadBlock = useCallback(async (n: number) => {
-    const qs = await getExamQuestions(n);
+    const qs = await getExamQuestions(form, n);
     setQuestions(qs);
     setStates(freshStates(qs.length));
     setCurrentIndex(0);
     currentIndexRef.current = 0;
     setStrikeMode(false);
+    setHighlightMode(false);
     enterRef.current = Date.now();
     endingRef.current = false;
     setDeadline(Date.now() + BLOCK_MS);
     setPhase("active");
-  }, []);
+  }, [form]);
 
   useEffect(() => {
     if (!user) return;
     let active = true;
     (async () => {
       try {
-        const count = await getBlockCount();
+        const count = await getBlockCount(form);
         if (!active) return;
-        if (count < 1) { setErrorMsg("No blocks found."); setPhase("error"); return; }
-        const session = await createBlockSession(user.id, 0, "full_exam"); // block_number ignored; whole-exam run
+        if (count < 1) { setErrorMsg(`No blocks found for NBME ${form}.`); setPhase("error"); return; }
+        const session = await createBlockSession(user.id, form, null, "full_exam"); // whole-form run
         if (!active) return;
         setBlocks(Array.from({ length: count }, (_, i) => i + 1));
         setSessionId(session.id);
@@ -105,7 +109,7 @@ export default function FullExam() {
     })();
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, form]);
 
   const commitDwell = useCallback(() => {
     const now = Date.now();
@@ -182,7 +186,7 @@ export default function FullExam() {
       }
       await completeSession(sessionId);
       // Build review across all blocks
-      const fullByBlock = await Promise.all(blocks.map((n) => getFullQuestions(n)));
+      const fullByBlock = await Promise.all(blocks.map((n) => getFullQuestions(form, n)));
       const full = fullByBlock.flat();
       const byId = new Map(full.map((f) => [f.id, f]));
       const orderedFull: FullQuestion[] = [];
@@ -219,7 +223,7 @@ export default function FullExam() {
       <Button variant="outline" onClick={() => navigate("/")}>Back to home</Button></div></Center>;
 
   if (phase === "review" && reviewData)
-    return <BlockReview questions={reviewData.questions} answers={reviewData.answers} onExit={() => navigate("/")} title="Full exam review" />;
+    return <ReviewQueue questions={reviewData.questions} answers={reviewData.answers} onExit={() => navigate("/")} title={`Full exam review · NBME ${form}`} />;
 
   if (phase === "break")
     return (
@@ -261,8 +265,9 @@ export default function FullExam() {
         <main className="min-w-0 flex-1 overflow-y-auto">
           {q && s && (
             <VignettePanel key={q.id} question={q} selectedLetter={s.selectedLetter} struckLetters={s.struckLetters}
-              highlightHtml={s.highlightHtml} strikeMode={strikeMode} flagged={s.flagged}
-              onToggleStrikeMode={() => setStrikeMode((m) => !m)} onToggleFlag={onToggleFlag}
+              highlightHtml={s.highlightHtml} highlightMode={highlightMode} strikeMode={strikeMode} flagged={s.flagged}
+              onToggleHighlightMode={() => { setHighlightMode((m) => !m); setStrikeMode(false); }}
+              onToggleStrikeMode={() => { setStrikeMode((m) => !m); setHighlightMode(false); }} onToggleFlag={onToggleFlag}
               onSelect={onSelect} onToggleStrike={onToggleStrike}
               onChangeHighlight={(h) => patchCurrent({ highlightHtml: h })} />
           )}

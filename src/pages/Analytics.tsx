@@ -1,41 +1,139 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getAttemptsWithQuestions } from "@/lib/queries";
+import { getAttemptsWithQuestions, getReviewQueue } from "@/lib/queries";
 import {
   ERROR_TAGS,
   ERROR_TAG_META,
+  accuracyByTag,
   errorTypeDistribution,
   firstInstinct,
   pacingByPosition,
+  reviewDeckRows,
+  scoresByForm,
   staminaByBlock,
+  tagTrendByForm,
+  wrongAnswers,
   type AnalyticsAttempt,
   type Bucket,
   type ErrorTag,
+  type WrongRow,
 } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, ArrowLeft, Gauge, Repeat, Tags, TrendingDown } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronRight, Download, FileText, Gauge, Layers, LineChart, ListChecks, Repeat, Tags, TrendingDown } from "lucide-react";
 
 export default function Analytics() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [attempts, setAttempts] = useState<AnalyticsAttempt[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // null = all forms; otherwise scope the whole dashboard to one form.
+  const [formFilter, setFormFilter] = useState<number | null>(null);
 
   useEffect(() => {
     if (!user) return;
     getAttemptsWithQuestions(user.id).then(setAttempts).catch((e) => setError(e?.message ?? "Failed to load analytics."));
   }, [user]);
 
-  const fi = useMemo(() => (attempts ? firstInstinct(attempts) : null), [attempts]);
-  const byDiscipline = useMemo(
-    () => (attempts ? errorTypeDistribution(attempts, (a) => a.discipline) : null),
-    [attempts]
+  // Per-form scores are computed over ALL attempts (the whole point is not to pool).
+  const formScores = useMemo(() => (attempts ? scoresByForm(attempts) : []), [attempts]);
+
+  // Everything below the form strip is scoped to the selected form.
+  const scoped = useMemo(
+    () => (attempts ? (formFilter == null ? attempts : attempts.filter((a) => a.nbmeForm === formFilter)) : null),
+    [attempts, formFilter]
   );
-  const pacing = useMemo(() => (attempts ? pacingByPosition(attempts) : []), [attempts]);
-  const stamina = useMemo(() => (attempts ? staminaByBlock(attempts, true) : []), [attempts]);
+
+  const fi = useMemo(() => (scoped ? firstInstinct(scoped) : null), [scoped]);
+  const byDiscipline = useMemo(
+    () => (scoped ? errorTypeDistribution(scoped, (a) => a.discipline) : null),
+    [scoped]
+  );
+  const pacing = useMemo(() => (scoped ? pacingByPosition(scoped) : []), [scoped]);
+  const stamina = useMemo(() => (scoped ? staminaByBlock(scoped, true) : []), [scoped]);
+
+  // Strong & weak by tag (scoped to the selected form), three cuts, worst-first.
+  const swDiscipline = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.discipline) : []), [scoped]);
+  const swSystem = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.system) : []), [scoped]);
+  const swType = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.questionType) : []), [scoped]);
+
+  // Practice-vs-exam split (unscoped by form): a big gap = pressure/retrieval, not content.
+  const modeSplit = useMemo(() => {
+    if (!scoped) return null;
+    const cut = (pred: (a: AnalyticsAttempt) => boolean) => {
+      const pool = scoped.filter(pred);
+      const answered = pool.filter((a) => a.finalLetter != null);
+      const correct = answered.filter((a) => a.finalLetter === a.correctLetter).length;
+      return { total: answered.length, correct, accuracy: answered.length ? correct / answered.length : 0 };
+    };
+    return {
+      practice: cut((a) => a.mode === "practice" || a.mode === "custom"),
+      exam: cut((a) => a.mode === "block" || a.mode === "full_exam"),
+    };
+  }, [scoped]);
+
+  // Cross-form trend — over ALL attempts, since the point is comparing forms.
+  const trend = useMemo(() => (attempts ? tagTrendByForm(attempts, (a) => a.discipline) : null), [attempts]);
+
+  // Wrong-answer filter — every question currently gotten wrong, across all sittings.
+  const allWrong = useMemo(() => (attempts ? wrongAnswers(attempts) : []), [attempts]);
+  const [fSystem, setFSystem] = useState("");
+  const [fDiscipline, setFDiscipline] = useState("");
+  const [fType, setFType] = useState("");
+  const [fErrorTag, setFErrorTag] = useState("");
+  const wrongFiltered = useMemo(
+    () => allWrong.filter((r) =>
+      (!fSystem || r.system === fSystem) &&
+      (!fDiscipline || r.discipline === fDiscipline) &&
+      (!fType || r.questionType === fType) &&
+      (!fErrorTag || (fErrorTag === "__untagged" ? r.errorTag == null : r.errorTag === fErrorTag))),
+    [allWrong, fSystem, fDiscipline, fType, fErrorTag]
+  );
+  const distinct = (pick: (r: WrongRow) => string) => [...new Set(allWrong.map(pick))].filter(Boolean).sort();
+
+  // Open the filtered wrong set as a review queue, focused on `focusId`.
+  const openQueue = (focusId: string) =>
+    navigate("/review/queue", {
+      state: { questionIds: wrongFiltered.map((r) => r.questionId), focusId, title: "Wrong-answer review" },
+    });
+
+  // Anki export — her incorrect + flagged set as a selection JSON for genanki.
+  const deckRows = useMemo(() => (attempts ? reviewDeckRows(attempts) : []), [attempts]);
+  const [exporting, setExporting] = useState(false);
+  async function exportAnki() {
+    if (!user || deckRows.length === 0) return;
+    setExporting(true);
+    try {
+      const { questions } = await getReviewQueue(user.id, deckRows.map((r) => r.questionId));
+      const payload = {
+        exported_at: new Date().toISOString(),
+        source: "nbme-practice-app · incorrect + flagged",
+        questions: questions.map((q) => ({
+          q_number: q.q_number,
+          nbme_form: q.nbme_form,
+          block_number: q.block_number,
+          system_tag: q.system_tag,
+          discipline_tag: q.discipline_tag,
+          question_type: q.question_type,
+          answer: q.options.find((o) => o.letter === q.correct_letter)?.text ?? "",
+          hook: q.enriched_explanation?.hook ?? "",
+        })),
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `nbme-anki-selection-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const contentVsProcess = useMemo(() => {
     if (!byDiscipline) return null;
@@ -66,8 +164,71 @@ export default function Analytics() {
           </CardContent></Card>
         )}
 
+        {/* ── 0. Scores by form (never pooled) + form filter ───────────────── */}
+        {attempts && attempts.length > 0 && formScores.length > 0 && (
+          <section>
+            <SectionHead icon={FileText} title="Scores by form"
+              sub="Each form scored on its own — a pooled average across forms doesn't predict a pass." />
+            <div className="grid gap-3 sm:grid-cols-3">
+              {formScores.map((f) => {
+                const w = Math.round(f.accuracy * 100);
+                const tone = w >= 70 ? "text-correct" : w >= 55 ? "text-amber-600" : "text-incorrect";
+                const on = formFilter === f.form;
+                return (
+                  <button key={f.form} onClick={() => setFormFilter(on ? null : f.form)}
+                    className={cn(
+                      "rounded-lg border p-4 text-left transition-colors",
+                      on ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent"
+                    )}>
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">NBME {f.form}</div>
+                    <div className={cn("mt-1 text-3xl font-bold tabular-nums", tone)}>{w}%</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">{f.correct}/{f.total} correct{on ? " · filtering ▾" : ""}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+              <span>Showing:</span>
+              <button onClick={() => setFormFilter(null)}
+                className={cn("rounded-full border px-3 py-1", formFilter == null ? "border-primary bg-accent text-primary" : "border-border hover:bg-accent")}>
+                All forms
+              </button>
+              {formScores.map((f) => (
+                <button key={f.form} onClick={() => setFormFilter(f.form)}
+                  className={cn("rounded-full border px-3 py-1", formFilter === f.form ? "border-primary bg-accent text-primary" : "border-border hover:bg-accent")}>
+                  NBME {f.form}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
         {attempts && attempts.length > 0 && fi && byDiscipline && (
           <>
+            {/* ── Strong & weak by tag (scoped) + practice-vs-exam ──────────── */}
+            <section>
+              <SectionHead icon={Layers} title="Strong & weak by tag"
+                sub={`Accuracy per tag${formFilter == null ? " (all forms)" : ` · NBME ${formFilter}`}, weakest first. Raw counts, no percentiles.`} />
+              <div className="grid gap-4 md:grid-cols-3">
+                <TagCard heading="By discipline" rows={swDiscipline} />
+                <TagCard heading="By system" rows={swSystem} />
+                <TagCard heading="By question type" rows={swType} />
+              </div>
+
+              {modeSplit && (modeSplit.practice.total > 0 || modeSplit.exam.total > 0) && (
+                <Card className="mt-4"><CardContent className="p-4">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Practice vs exam</div>
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    A big gap (exam below practice) points to pressure/retrieval under timing — not a content hole.
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <ModeStat label="Practice" s={modeSplit.practice} />
+                    <ModeStat label="Timed / exam" s={modeSplit.exam} />
+                  </div>
+                </CardContent></Card>
+              )}
+            </section>
+
             {/* ── 1. First instinct ─────────────────────────────────────────── */}
             <section>
               <SectionHead icon={Repeat} title="First-instinct tracker"
@@ -185,10 +346,177 @@ export default function Analytics() {
                 <AccuracyBars buckets={stamina} />
               )}
             </section>
+
+            {/* ── 5. Cross-form trend (all forms) ───────────────────────────── */}
+            {trend && trend.rows.length > 0 && (
+              <section>
+                <SectionHead icon={LineChart} title="Trend by discipline — across forms"
+                  sub="Is the gap actually closing? Accuracy per discipline, one column per form. Weakest first." />
+                {trend.forms.length < 2 && (
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    Only one form so far — the trend fills in as you sit NBME {trend.forms.join(", ")} and the next forms.
+                  </p>
+                )}
+                <Card><CardContent className="p-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-xs text-muted-foreground">
+                          <th className="py-1 pr-4 font-medium">Discipline</th>
+                          {trend.forms.map((f) => (
+                            <th key={f} className="py-1 pr-4 text-right font-medium">NBME {f}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {trend.rows.map((row) => (
+                          <tr key={row.label} className="border-t">
+                            <td className="py-1.5 pr-4 font-medium text-slate-700">{row.label}</td>
+                            {trend.forms.map((f) => {
+                              const b = row.perForm[f];
+                              const w = Math.round(b.accuracy * 100);
+                              const tone = b.total === 0 ? "text-slate-300" : w >= 70 ? "text-correct" : w >= 50 ? "text-amber-600" : "text-incorrect";
+                              return (
+                                <td key={f} className={cn("py-1.5 pr-4 text-right tabular-nums", tone)}>
+                                  {b.total ? `${w}% · ${b.correct}/${b.total}` : "—"}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent></Card>
+              </section>
+            )}
+
+            {/* ── 6. Wrong-answer filter (all sittings) ─────────────────────── */}
+            <section>
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <SectionHead icon={ListChecks} title={`Wrong-answer review (${wrongFiltered.length})`}
+                  sub="Every question you currently get wrong, across all sittings. Filter, then walk them as a queue." />
+                {deckRows.length > 0 && (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button size="sm" onClick={() => navigate("/review/deck")}
+                      title="Re-attempt your incorrect + flagged questions COLD — answer blind, reveal after. Kept out of your scores.">
+                      <Repeat className="size-4" /> Re-attempt {deckRows.length} cold
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={exporting} onClick={exportAnki}
+                      title="Download your incorrect + flagged set as JSON, then run scripts/anki_export.py to build the .apkg">
+                      <Download className="size-4" /> {exporting ? "Exporting…" : `Export ${deckRows.length} to Anki`}
+                    </Button>
+                  </div>
+                )}
+              </div>
+              <Card><CardContent className="p-4">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <FilterSelect label="System" value={fSystem} onChange={setFSystem} options={distinct((r) => r.system)} />
+                  <FilterSelect label="Discipline" value={fDiscipline} onChange={setFDiscipline} options={distinct((r) => r.discipline)} />
+                  <FilterSelect label="Type" value={fType} onChange={setFType} options={distinct((r) => r.questionType)} />
+                  <ErrorTagSelect value={fErrorTag} onChange={setFErrorTag} />
+                  {(fSystem || fDiscipline || fType || fErrorTag) && (
+                    <button className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent"
+                      onClick={() => { setFSystem(""); setFDiscipline(""); setFType(""); setFErrorTag(""); }}>
+                      Clear filters
+                    </button>
+                  )}
+                  {wrongFiltered.length > 0 && (
+                    <Button size="sm" className="ml-auto" onClick={() => openQueue(wrongFiltered[0].questionId)}>
+                      Review {wrongFiltered.length} in a queue <ChevronRight className="size-4" />
+                    </Button>
+                  )}
+                </div>
+                {wrongFiltered.length === 0 ? (
+                  <p className="px-1 py-6 text-center text-sm text-muted-foreground">
+                    {allWrong.length === 0 ? "Nothing wrong yet — sit a block and misses land here." : "No misses match these filters."}
+                  </p>
+                ) : (
+                  <ul className="divide-y">
+                    {wrongFiltered.map((r) => (
+                      <li key={r.questionId}>
+                        <button onClick={() => openQueue(r.questionId)}
+                          className="flex w-full items-center gap-3 px-1 py-2.5 text-left transition-colors hover:bg-accent">
+                          <span className="w-28 shrink-0 text-xs tabular-nums text-muted-foreground">NBME {r.nbmeForm} · B{r.blockNumber} · Q{r.qNumber}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-slate-800">{r.discipline} · {r.system}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              {r.questionType}
+                              {r.errorTag ? <> · <span className="text-amber-700">{ERROR_TAG_META[r.errorTag].label}</span></> : <> · <span className="text-slate-400">untagged</span></>}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                            You <span className="font-semibold text-incorrect">{r.finalLetter ?? "—"}</span>
+                            <span className="mx-1">·</span>
+                            Correct <span className="font-semibold text-correct">{r.correctLetter}</span>
+                          </span>
+                          <ChevronRight className="size-4 shrink-0 text-slate-400" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent></Card>
+            </section>
           </>
         )}
       </main>
     </div>
+  );
+}
+
+function TagCard({ heading, rows }: { heading: string; rows: Bucket[] }) {
+  return (
+    <Card><CardContent className="p-4">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</div>
+      {rows.length === 0 ? <p className="text-sm text-muted-foreground">—</p> : (
+        <ul className="space-y-1.5">
+          {rows.map((r) => {
+            const w = Math.round(r.accuracy * 100);
+            const tone = w >= 70 ? "text-correct" : w >= 50 ? "text-amber-600" : "text-incorrect";
+            return (
+              <li key={r.label} className="flex items-center justify-between gap-2 text-sm">
+                <span className="min-w-0 truncate text-slate-700">{r.label}</span>
+                <span className={cn("shrink-0 font-semibold tabular-nums", tone)}>{r.correct}/{r.total}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </CardContent></Card>
+  );
+}
+
+function ModeStat({ label, s }: { label: string; s: { total: number; correct: number; accuracy: number } }) {
+  const w = Math.round(s.accuracy * 100);
+  const tone = s.total === 0 ? "text-slate-400" : w >= 70 ? "text-correct" : w >= 55 ? "text-amber-600" : "text-incorrect";
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn("mt-1 text-2xl font-bold tabular-nums", tone)}>{s.total ? `${w}%` : "—"}</div>
+      <div className="mt-0.5 text-xs text-muted-foreground">{s.total ? `${s.correct}/${s.total} correct` : "no sittings"}</div>
+    </div>
+  );
+}
+
+function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}
+      className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-slate-700">
+      <option value="">{label}: all</option>
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+}
+
+function ErrorTagSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}
+      className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-slate-700">
+      <option value="">Error type: all</option>
+      {ERROR_TAGS.map((t) => <option key={t} value={t}>{ERROR_TAG_META[t as ErrorTag].label}</option>)}
+      <option value="__untagged">Untagged</option>
+    </select>
   );
 }
 

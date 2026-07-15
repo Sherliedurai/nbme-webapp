@@ -85,6 +85,10 @@ Deepika already uses Anki but **hates bloated cards** — Mehlman's are too long
 - The app teaches; **Anki drills.** Do not duplicate the knockdowns/mechanism/how_they_test onto cards.
 - Personal use only. Never share/upload.
 
+**Implemented:** `scripts/anki_export.py` (genanki) builds the `.apkg`; the app's "Export to Anki" button (dashboard) downloads her incorrect+flagged set as JSON for it. Card fronts are derived deterministically from the physician-reviewed `hook`.
+
+**Future improvement (not yet built):** the deterministic front-from-`hook` extraction leaks the answer on ~1–2/20 *answer-first* hooks (e.g. "↓5α-reductase → ↓DHT → hypoplastic prostate…"). The clean fix is a dedicated **`card_front`** field written at enrichment time (model-drafted, physician-reviewed), so the card trigger is authored, not parsed. Add it to the enrichment schema before scaling the deck across forms.
+
 ---
 
 ## Extraction rules

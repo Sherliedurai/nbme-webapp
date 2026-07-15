@@ -8,6 +8,9 @@ import Exam from "@/pages/Exam";
 import Practice from "@/pages/Practice";
 import FullExam from "@/pages/FullExam";
 import Analytics from "@/pages/Analytics";
+import QueueReview from "@/pages/QueueReview";
+import CustomBlock from "@/pages/CustomBlock";
+import ReviewDeck from "@/pages/ReviewDeck";
 import SetupNotice from "@/pages/SetupNotice";
 
 function Protected({ children }: { children: JSX.Element }) {
@@ -27,10 +30,13 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<Protected><Home /></Protected>} />
-      <Route path="/practice/:blockNumber" element={<Protected><Practice /></Protected>} />
-      <Route path="/exam/:blockNumber" element={<Protected><Exam /></Protected>} />
-      <Route path="/exam-full" element={<Protected><FullExam /></Protected>} />
+      <Route path="/practice/:form/:blockNumber" element={<Protected><Practice /></Protected>} />
+      <Route path="/exam/:form/:blockNumber" element={<Protected><Exam /></Protected>} />
+      <Route path="/exam-full/:form" element={<Protected><FullExam /></Protected>} />
       <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
+      <Route path="/custom" element={<Protected><CustomBlock /></Protected>} />
+      <Route path="/review/queue" element={<Protected><QueueReview /></Protected>} />
+      <Route path="/review/deck" element={<Protected><ReviewDeck /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -11,8 +11,10 @@ import {
   type AttemptInput,
 } from "@/lib/queries";
 import type { ExamQuestion, FullQuestion, QuestionState } from "@/lib/types";
+import type { AnalyticsAttempt } from "@/lib/analytics";
 import { useBlockTimer } from "@/hooks/useBlockTimer";
-import BlockReview, { type ReviewAnswer } from "@/components/review/BlockReview";
+import ReviewQueue, { type ReviewAnswer } from "@/components/review/ReviewQueue";
+import BlockReport from "@/components/review/BlockReport";
 import ExamTopBar from "@/components/exam/ExamTopBar";
 import QuestionNavigator, { type NavCell } from "@/components/exam/QuestionNavigator";
 import VignettePanel from "@/components/exam/VignettePanel";
@@ -21,12 +23,11 @@ import LabValuesModal from "@/components/exam/LabValuesModal";
 import CalculatorModal from "@/components/exam/CalculatorModal";
 import SubmitReviewModal from "@/components/exam/SubmitReviewModal";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 
 const BLOCK_MS = 30 * 60 * 1000;
 const STORAGE_VERSION = "v1";
 
-type Phase = "loading" | "active" | "submitting" | "done" | "review" | "error";
+type Phase = "loading" | "active" | "submitting" | "report" | "review" | "error";
 
 interface Persisted {
   sessionId: string;
@@ -48,11 +49,12 @@ function freshStates(n: number): QuestionState[] {
 }
 
 export default function Exam() {
-  const { blockNumber: blockParam } = useParams();
+  const { form: formParam, blockNumber: blockParam } = useParams();
+  const form = Number(formParam);
   const blockNumber = Number(blockParam);
   const { user } = useAuth();
   const navigate = useNavigate();
-  const storageKey = `nbme:exam:${STORAGE_VERSION}:${user?.id}:${blockNumber}`;
+  const storageKey = `nbme:exam:${STORAGE_VERSION}:${user?.id}:${form}:${blockNumber}`;
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -63,11 +65,13 @@ export default function Exam() {
   const [states, setStates] = useState<QuestionState[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [strikeMode, setStrikeMode] = useState(false);
+  const [highlightMode, setHighlightMode] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [modal, setModal] = useState<"lab" | "calc" | null>(null);
   const [showSubmitReview, setShowSubmitReview] = useState(false);
-  const [result, setResult] = useState<{ score: number; total: number } | null>(null);
+  const [report, setReport] = useState<{ attempts: AnalyticsAttempt[]; timeUsedSec: number } | null>(null);
   const [reviewData, setReviewData] = useState<{ questions: FullQuestion[]; answers: ReviewAnswer[] } | null>(null);
+  const [reviewFocus, setReviewFocus] = useState<{ focusId?: string; allMode: boolean }>({ allMode: false });
 
   const currentIndexRef = useRef(0);
   const enterRef = useRef<number>(Date.now());
@@ -82,7 +86,7 @@ export default function Exam() {
     let active = true;
     (async () => {
       try {
-        const [count, qs] = await Promise.all([getBlockCount(), getExamQuestions(blockNumber)]);
+        const [count, qs] = await Promise.all([getBlockCount(form), getExamQuestions(form, blockNumber)]);
         if (!active) return;
         if (qs.length === 0) {
           setErrorMsg(`No questions found for block ${blockNumber}.`);
@@ -100,7 +104,7 @@ export default function Exam() {
           setCurrentIndex(saved.currentIndex);
           currentIndexRef.current = saved.currentIndex;
         } else {
-          const session = await createBlockSession(user.id, blockNumber, "block");
+          const session = await createBlockSession(user.id, form, blockNumber, "block");
           if (!active) return;
           const dl = Date.now() + BLOCK_MS;
           setSessionId(session.id);
@@ -122,7 +126,7 @@ export default function Exam() {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, blockNumber]);
+  }, [user, form, blockNumber]);
 
   // ── Persist in-progress state ──────────────────────────────────────────────
   useEffect(() => {
@@ -224,17 +228,44 @@ export default function Exam() {
         });
         attemptIdsRef.current = await submitBlock(user.id, sessionId, attempts);
         clearPersisted(storageKey);
-        const score = attempts.filter((a) => a.is_correct).length;
-        setResult({ score, total: questions.length });
-        if (after === "home") navigate("/", { replace: true });
-        else setPhase("done");
+        if (after === "home") {
+          navigate("/", { replace: true });
+          return;
+        }
+        // Assemble the block debrief from tags (on the question) + her answers.
+        const nowIso = new Date().toISOString();
+        const reportAttempts: AnalyticsAttempt[] = questions.map((q, i) => {
+          const s = snapshot[i];
+          return {
+            questionId: q.id,
+            attemptId: attemptIdsRef.current.get(q.id) ?? null,
+            createdAt: nowIso,
+            firstLetter: s.firstLetter,
+            finalLetter: s.selectedLetter,
+            correctLetter: key.get(q.id) ?? "",
+            changed: s.firstLetter != null && s.firstLetter !== s.selectedLetter,
+            errorTag: null,
+            flagged: s.flagged,
+            qNumber: q.q_number,
+            nbmeForm: q.nbme_form,
+            blockNumber: q.block_number,
+            discipline: q.discipline_tag,
+            system: q.system_tag,
+            questionType: q.question_type,
+            mode: "block",
+            secondsSpent: Math.round(s.secondsSpent),
+          };
+        });
+        const timeUsedSec = Math.min(BLOCK_MS / 1000, Math.max(0, Math.round((BLOCK_MS - (deadline - Date.now())) / 1000)));
+        setReport({ attempts: reportAttempts, timeUsedSec });
+        setPhase("report");
       } catch (e: any) {
         submittingRef.current = false;
         setErrorMsg(e?.message ?? "Submit failed. Your answers are saved locally — try again.");
         setPhase("error");
       }
     },
-    [user, sessionId, questions, commitDwell, storageKey, navigate]
+    [user, sessionId, questions, commitDwell, storageKey, navigate, deadline]
   );
 
   const onExpire = useCallback(() => {
@@ -260,9 +291,10 @@ export default function Exam() {
 
   // Fetch full questions (answers + enrichment) and enter review, aligning the
   // user's in-memory answers by question id.
-  async function enterReview() {
+  async function enterReview(focus: { focusId?: string; allMode?: boolean } = {}) {
     try {
-      const full = await getFullQuestions(blockNumber);
+      setReviewFocus({ focusId: focus.focusId, allMode: !!focus.allMode });
+      const full = await getFullQuestions(form, blockNumber);
       const stateById = new Map(questions.map((qq, i) => [qq.id, statesRef.current[i]]));
       const answers: ReviewAnswer[] = full.map((fq) => {
         const s = stateById.get(fq.id);
@@ -288,11 +320,26 @@ export default function Exam() {
   }
   if (phase === "review" && reviewData) {
     return (
-      <BlockReview
+      <ReviewQueue
         questions={reviewData.questions}
         answers={reviewData.answers}
-        onExit={() => navigate("/")}
-        title={`Review · Block ${blockNumber}`}
+        onExit={() => setPhase("report")}
+        exitLabel="Back to report"
+        initialQuestionId={reviewFocus.focusId}
+        defaultAllMode={reviewFocus.allMode}
+        title={`Review · NBME ${form} · Block ${blockNumber}`}
+      />
+    );
+  }
+  if (phase === "report" && report) {
+    return (
+      <BlockReport
+        title={`NBME ${form} · Block ${blockNumber}`}
+        attempts={report.attempts}
+        timeUsedSec={report.timeUsedSec}
+        onReviewAll={() => enterReview({ allMode: true })}
+        onReviewQuestion={(qNumber) => enterReview({ focusId: questions.find((q) => q.q_number === qNumber)?.id, allMode: false })}
+        onHome={() => navigate("/")}
       />
     );
   }
@@ -308,32 +355,6 @@ export default function Exam() {
       </CenterMsg>
     );
   }
-  if (phase === "done" && result) {
-    const pct = Math.round((result.score / result.total) * 100);
-    return (
-      <div className="grid min-h-screen place-items-center bg-background p-6">
-        <Card className="w-full max-w-md text-center">
-          <CardContent className="space-y-4 p-8">
-            <div className="text-xs font-semibold uppercase tracking-widest text-primary">
-              Block {blockNumber} submitted
-            </div>
-            <div className="text-5xl font-bold tabular-nums text-slate-800">
-              {result.score}
-              <span className="text-2xl text-muted-foreground">/{result.total}</span>
-            </div>
-            <div className="text-sm text-muted-foreground">{pct}% correct</div>
-            <div className="flex flex-col gap-2 pt-2">
-              <Button onClick={enterReview}>Review answers</Button>
-              <Button variant="outline" onClick={() => navigate("/")}>
-                Back to blocks
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   const q = questions[currentIndex];
   const s = states[currentIndex];
 
@@ -370,9 +391,11 @@ export default function Exam() {
               selectedLetter={s.selectedLetter}
               struckLetters={s.struckLetters}
               highlightHtml={s.highlightHtml}
+              highlightMode={highlightMode}
               strikeMode={strikeMode}
               flagged={s.flagged}
-              onToggleStrikeMode={() => setStrikeMode((m) => !m)}
+              onToggleHighlightMode={() => { setHighlightMode((m) => !m); setStrikeMode(false); }}
+              onToggleStrikeMode={() => { setStrikeMode((m) => !m); setHighlightMode(false); }}
               onToggleFlag={onToggleFlag}
               onSelect={onSelect}
               onToggleStrike={onToggleStrike}

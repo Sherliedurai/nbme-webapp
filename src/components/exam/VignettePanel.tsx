@@ -11,8 +11,10 @@ interface Props {
   selectedLetter: string | null;
   struckLetters: string[];
   highlightHtml: string | null;
+  highlightMode: boolean;
   strikeMode: boolean;
   flagged: boolean;
+  onToggleHighlightMode: () => void;
   onToggleStrikeMode: () => void;
   onToggleFlag: () => void;
   onSelect: (letter: string) => void;
@@ -29,8 +31,10 @@ export default function VignettePanel(props: Props) {
     selectedLetter,
     struckLetters,
     highlightHtml,
+    highlightMode,
     strikeMode,
     flagged,
+    onToggleHighlightMode,
     onToggleStrikeMode,
     onToggleFlag,
     onSelect,
@@ -42,7 +46,9 @@ export default function VignettePanel(props: Props) {
 
   const proseRef = useRef<HTMLDivElement>(null);
 
-  function applyHighlight() {
+  // Armed highlighter: whatever you select gets highlighted the moment you
+  // release the mouse. No confirm click — the pen is already in your hand.
+  function highlightSelection() {
     const container = proseRef.current;
     const sel = window.getSelection();
     if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) return;
@@ -53,12 +59,21 @@ export default function VignettePanel(props: Props) {
     try {
       range.surroundContents(span);
     } catch {
+      // Selection crosses element boundaries (e.g. an existing highlight) —
+      // extract and re-wrap instead.
       const frag = range.extractContents();
       span.appendChild(frag);
       range.insertNode(span);
     }
     sel.removeAllRanges();
     onChangeHighlight(container.innerHTML);
+  }
+
+  // Fires on mouse-release inside the vignette. Only acts while the pen is armed.
+  function onProseMouseUp() {
+    if (revealed || !highlightMode) return;
+    // Let the selection settle before we read it.
+    requestAnimationFrame(highlightSelection);
   }
 
   // Parent-controlled option click: strike-mode toggles strike; a struck option
@@ -77,27 +92,22 @@ export default function VignettePanel(props: Props) {
     return null;
   }
 
-  // Keep the mouse selection alive: a plain button's mousedown clears the
-  // selection before onClick runs — preventDefault stops that.
-  const keepSelection = (e: React.MouseEvent) => e.preventDefault();
-
   return (
     <div className="mx-auto max-w-3xl px-6 py-6">
       {!revealed && (
         <div className="mb-4 flex items-center gap-2">
-          <Button variant="outline" size="sm" onMouseDown={keepSelection} onClick={applyHighlight}
-            title="Select vignette text, then click Highlight">
-            <Highlighter className="size-4" /> Highlight
+          <Button variant={highlightMode ? "default" : "outline"} size="sm" onClick={onToggleHighlightMode}
+            title="Highlighter — arm it, then select any vignette text to highlight it. Click again to put the pen down.">
+            <Highlighter className="size-4" /> {highlightMode ? "Highlighting" : "Highlight"}
           </Button>
           {highlightHtml && (
-            <Button variant="ghost" size="sm" onMouseDown={keepSelection}
-              onClick={() => onChangeHighlight(null)} title="Clear highlights">
+            <Button variant="ghost" size="sm" onClick={() => onChangeHighlight(null)} title="Clear highlights">
               <Eraser className="size-4" /> Clear
             </Button>
           )}
           <Button variant={strikeMode ? "default" : "outline"} size="sm" onClick={onToggleStrikeMode}
-            title="Strike mode — click options to cross them out. (The ✗ on each option always works too.)">
-            <Strikethrough className="size-4" /> Strikethrough
+            title="Strikethrough — arm it, then click any option to cross it out. Click again to put the pen down.">
+            <Strikethrough className="size-4" /> {strikeMode ? "Striking" : "Strikethrough"}
           </Button>
           <div className="ml-auto">
             <Button variant={flagged ? "default" : "outline"} size="sm" onClick={onToggleFlag}
@@ -110,9 +120,14 @@ export default function VignettePanel(props: Props) {
       )}
 
       {highlightHtml ? (
-        <div ref={proseRef} className="vignette-prose" dangerouslySetInnerHTML={{ __html: highlightHtml }} />
+        <div ref={proseRef} onMouseUp={onProseMouseUp}
+          className={cn("vignette-prose", highlightMode && !revealed && "cursor-text selection:bg-yellow-200")}
+          dangerouslySetInnerHTML={{ __html: highlightHtml }} />
       ) : (
-        <div ref={proseRef} className="vignette-prose">{question.vignette_text}</div>
+        <div ref={proseRef} onMouseUp={onProseMouseUp}
+          className={cn("vignette-prose", highlightMode && !revealed && "cursor-text selection:bg-yellow-200")}>
+          {question.vignette_text}
+        </div>
       )}
 
       {question.clinical_image_url && <ClinicalImage objectPath={question.clinical_image_url} />}
@@ -124,6 +139,7 @@ export default function VignettePanel(props: Props) {
             option={opt}
             selected={selectedLetter === opt.letter}
             struck={struckLetters.includes(opt.letter)}
+            strikeMode={strikeMode && !revealed}
             reveal={revealFor(opt.letter)}
             disabled={revealed}
             onClick={() => onCardClick(opt.letter)}
@@ -132,9 +148,14 @@ export default function VignettePanel(props: Props) {
         ))}
       </div>
 
+      {highlightMode && !revealed && (
+        <p className="mt-3 text-xs text-primary">
+          Highlighter armed — select any vignette text to highlight it. Click <strong>Highlighting</strong> again to put the pen down.
+        </p>
+      )}
       {strikeMode && !revealed && (
         <p className="mt-3 text-xs text-flagged">
-          Strike mode on — clicking an option crosses it out. Toggle it off to select answers.
+          Strikethrough armed — click an option to cross it out. Click <strong>Striking</strong> again to put the pen down.
         </p>
       )}
     </div>

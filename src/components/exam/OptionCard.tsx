@@ -8,6 +8,8 @@ interface Props {
   struck: boolean;
   onClick: () => void;
   onToggleStrike: () => void;
+  /** True while the strikethrough pen is armed — the whole card strikes. */
+  strikeMode?: boolean;
   /** Review/practice reveal: mark the correct option green, a wrong pick red. */
   reveal?: "correct" | "wrong" | null;
   /** Locked once revealed — no selecting/striking. */
@@ -20,6 +22,7 @@ export default function OptionCard({
   struck,
   onClick,
   onToggleStrike,
+  strikeMode = false,
   reveal = null,
   disabled = false,
 }: Props) {
@@ -28,7 +31,9 @@ export default function OptionCard({
     <div
       className={cn(
         "group flex items-center gap-3 rounded-lg border bg-card px-4 py-3 transition-all",
-        !disabled && !struck && "cursor-pointer hover:border-primary/50 hover:bg-accent",
+        !disabled && "cursor-pointer",
+        !disabled && !struck && !strikeMode && "hover:border-primary/50 hover:bg-accent",
+        !disabled && strikeMode && "hover:border-flagged/60 hover:bg-flagged-soft",
         struck && "opacity-55",
         selected && !struck && !reveal && "border-primary bg-accent ring-1 ring-primary",
         reveal === "correct" && "border-correct bg-correct-soft ring-1 ring-correct",
@@ -74,7 +79,7 @@ export default function OptionCard({
         </span>
       )}
 
-      {interactive && (
+      {interactive && !strikeMode && (
         <button
           type="button"
           title={struck ? "Un-strike" : "Strike out (eliminate)"}
