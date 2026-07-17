@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { completeSession, recordAttempt, updateAttemptErrorTag } from "@/lib/queries";
-import type { FullQuestion } from "@/lib/types";
+import { clearBlockProgress, completeSession, recordAttempt, saveBlockProgress, updateAttemptErrorTag, updateSessionIndex } from "@/lib/queries";
+import type { BlockProgressRow, FullQuestion } from "@/lib/types";
 import type { ErrorTag } from "@/lib/analytics";
 import { formatDuration } from "@/lib/utils";
 import VignettePanel from "@/components/exam/VignettePanel";
@@ -21,16 +21,26 @@ interface Props {
   isReview?: boolean;
   /** For review-deck misses: tag the ORIGINAL exam attempt, not the review one. */
   tagAttemptId?: (questionId: string) => string | null;
+  /** Practice: persist progress to block_progress + current_index so it resumes. */
+  persist?: boolean;
+  /** Resume position (first unanswered question). */
+  initialIndex?: number;
+  /** Previously-answered questions (question_id → saved answer) — for the score. */
+  initialAnswered?: Record<string, BlockProgressRow>;
   onExit: () => void;
 }
 
 /**
  * Answer-blind practice runner: pick → Check (records the attempt) → reveal
  * answer + explanation, tag a miss → Next. Shared by Practice, custom blocks,
- * and the cold re-attempt review deck.
+ * and the cold re-attempt review deck. With `persist`, it saves each answer to
+ * block_progress and the position to the session so practice resumes mid-block.
  */
-export default function PracticeRunner({ questions, userId, sessionId, title, isReview = false, tagAttemptId, onExit }: Props) {
-  const [index, setIndex] = useState(0);
+export default function PracticeRunner({
+  questions, userId, sessionId, title, isReview = false, tagAttemptId,
+  persist = false, initialIndex = 0, initialAnswered, onExit,
+}: Props) {
+  const [index, setIndex] = useState(Math.min(Math.max(initialIndex, 0), Math.max(questions.length - 1, 0)));
   const [selected, setSelected] = useState<string | null>(null);
   const [firstLetter, setFirstLetter] = useState<string | null>(null);
   const [struck, setStruck] = useState<string[]>([]);
@@ -40,7 +50,19 @@ export default function PracticeRunner({ questions, userId, sessionId, title, is
   const [flagged, setFlagged] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [attemptId, setAttemptId] = useState<string | null>(null);
-  const [score, setScore] = useState({ correct: 0, answered: 0 });
+  const [score, setScore] = useState(() => {
+    // Seed the running score from questions already answered before this resume.
+    if (!initialAnswered) return { correct: 0, answered: 0 };
+    const byId = new Map(questions.map((q) => [q.id, q]));
+    let correct = 0, answered = 0;
+    for (const [qid, row] of Object.entries(initialAnswered)) {
+      const q = byId.get(qid);
+      if (!q) continue;
+      answered++;
+      if (row.selected_letter === q.correct_letter) correct++;
+    }
+    return { correct, answered };
+  });
   const [modal, setModal] = useState<"lab" | "calc" | null>(null);
   const [done, setDone] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0); // running per-question timer (freezes on reveal)
@@ -85,11 +107,26 @@ export default function PracticeRunner({ questions, userId, sessionId, title, is
     } catch {
       /* non-fatal in practice */
     }
-  }, [q, selected, revealed, userId, sessionId, firstLetter, flagged, isReview]);
+    // Persist for resume: this answer + advance the saved position past it.
+    if (persist) {
+      void saveBlockProgress(userId, sessionId, {
+        question_id: q.id,
+        selected_letter: selected,
+        first_letter: firstLetter ?? selected,
+        first_answer_seconds: firstAnswer,
+        seconds_spent: seconds,
+        flagged,
+        struck_letters: struck,
+        highlight_html: highlightHtml,
+      }).catch(() => {});
+      void updateSessionIndex(sessionId, index + 1).catch(() => {});
+    }
+  }, [q, selected, revealed, userId, sessionId, firstLetter, flagged, isReview, persist, struck, highlightHtml, index]);
 
   const onNext = useCallback(async () => {
     if (index + 1 >= questions.length) {
       await completeSession(sessionId).catch(() => {});
+      if (persist) await clearBlockProgress(sessionId).catch(() => {}); // finished — clear the scratch
       setDone(true);
       return;
     }
@@ -99,7 +136,7 @@ export default function PracticeRunner({ questions, userId, sessionId, title, is
     enterRef.current = Date.now();
     firstAnswerRef.current = null;
     setElapsedSec(0);
-  }, [index, questions.length, sessionId]);
+  }, [index, questions.length, sessionId, persist]);
 
   const toggleStrike = (letter: string) =>
     setStruck((cur) => (cur.includes(letter) ? cur.filter((l) => l !== letter) : [...cur, letter]));

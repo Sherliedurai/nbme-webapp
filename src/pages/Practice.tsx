@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { createBlockSession, getFullQuestions } from "@/lib/queries";
-import type { FullQuestion } from "@/lib/types";
+import { countAnsweredInSession, createBlockSession, getFullQuestions, getUnfinishedBlock, loadBlockProgress } from "@/lib/queries";
+import type { BlockProgressRow, FullQuestion } from "@/lib/types";
 import PracticeRunner from "@/components/exam/PracticeRunner";
 import { Button } from "@/components/ui/button";
 
@@ -19,19 +19,43 @@ export default function Practice() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [questions, setQuestions] = useState<FullQuestion[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [initialIndex, setInitialIndex] = useState(0);
+  const [answered, setAnswered] = useState<Record<string, BlockProgressRow>>({});
 
   useEffect(() => {
     if (!user) return;
     let active = true;
     (async () => {
       try {
-        const qs = await getFullQuestions(form, blockNumber);
+        const [qs, existing] = await Promise.all([
+          getFullQuestions(form, blockNumber),
+          getUnfinishedBlock(user.id, form, blockNumber, "practice"),
+        ]);
         if (!active) return;
         if (qs.length === 0) { setErrorMsg(`No questions found for block ${blockNumber}.`); setPhase("error"); return; }
-        const session = await createBlockSession(user.id, form, blockNumber, "practice");
-        if (!active) return;
+
+        if (existing) {
+          // Resume: reuse the session, restore prior answers, land on the first
+          // unanswered question — do NOT restart. Position is the max of the saved
+          // index, the block_progress count, and the authoritative answered-count
+          // from attempts (covers sessions predating block_progress persistence).
+          const [progress, answeredCount] = await Promise.all([
+            loadBlockProgress(existing.id),
+            countAnsweredInSession(existing.id),
+          ]);
+          if (!active) return;
+          const pos = Math.max(existing.current_index, progress.length, answeredCount);
+          setSessionId(existing.id);
+          setAnswered(Object.fromEntries(progress.map((p) => [p.question_id, p])));
+          setInitialIndex(Math.min(pos, qs.length - 1));
+        } else {
+          const session = await createBlockSession(user.id, form, blockNumber, "practice"); // untimed → no time limit
+          if (!active) return;
+          setSessionId(session.id);
+          setAnswered({});
+          setInitialIndex(0);
+        }
         setQuestions(qs);
-        setSessionId(session.id);
         setPhase("active");
       } catch (e: any) {
         if (active) { setErrorMsg(e?.message ?? "Failed to load practice."); setPhase("error"); }
@@ -58,6 +82,9 @@ export default function Practice() {
       userId={user!.id}
       sessionId={sessionId!}
       title={`Practice · NBME ${form} · Block ${blockNumber}`}
+      persist
+      initialIndex={initialIndex}
+      initialAnswered={answered}
       onExit={() => navigate("/")}
     />
   );

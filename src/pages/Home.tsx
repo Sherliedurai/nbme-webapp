@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getForms, getUnfinishedBlock, type FormSummary } from "@/lib/queries";
+import { getForms, getResumableSessions, type FormSummary } from "@/lib/queries";
 import type { BlockSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ export default function Home() {
   const [form, setForm] = useState<number | null>(null);
   const [mode, setMode] = useState<Mode>("practice");
   const [error, setError] = useState<string | null>(null);
-  const [resume, setResume] = useState<BlockSession | null>(null);
+  const [resumables, setResumables] = useState<BlockSession[]>([]);
 
   useEffect(() => {
     getForms()
@@ -36,7 +36,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!user) return;
-    getUnfinishedBlock(user.id).then(setResume).catch(() => {});
+    getResumableSessions(user.id).then(setResumables).catch(() => {});
   }, [user]);
 
   const active = MODES.find((m) => m.id === mode)!;
@@ -57,21 +57,28 @@ export default function Home() {
       <main className="mx-auto max-w-4xl px-6 py-10">
         {error && <p className="mb-6 rounded-md bg-incorrect-soft px-4 py-3 text-sm text-incorrect">{error}</p>}
 
-        {/* ── Resume where you left off ───────────────────────────────────── */}
-        {resume && resume.nbme_form != null && resume.block_number != null && (
-          <div className="mb-6 flex items-center justify-between gap-4 rounded-lg border border-primary/40 bg-accent px-5 py-4">
-            <div className="flex items-center gap-3">
-              <RotateCcw className="size-5 shrink-0 text-primary" />
-              <div>
-                <div className="text-sm font-semibold text-slate-800">Resume where you left off</div>
-                <div className="text-xs text-muted-foreground">
-                  NBME {resume.nbme_form} · Block {resume.block_number} — timed block in progress{resume.paused ? " · interrupted" : ""}.
-                </div>
-              </div>
+        {/* ── Resume where you left off (timed + practice) ────────────────── */}
+        {resumables.filter((r) => r.nbme_form != null && r.block_number != null).length > 0 && (
+          <div className="mb-6 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <RotateCcw className="size-4 text-primary" /> Resume where you left off
             </div>
-            <Button size="sm" onClick={() => navigate(`/exam/${resume.nbme_form}/${resume.block_number}`)}>
-              <PlayCircle className="size-4" /> Resume
-            </Button>
+            {resumables.filter((r) => r.nbme_form != null && r.block_number != null).map((r) => {
+              const timed = r.mode === "block";
+              const label = timed ? "Timed block" : "Practice";
+              const to = timed ? `/exam/${r.nbme_form}/${r.block_number}` : `/practice/${r.nbme_form}/${r.block_number}`;
+              return (
+                <div key={r.id} className="flex items-center justify-between gap-4 rounded-lg border border-primary/40 bg-accent px-5 py-3">
+                  <div className="text-sm text-slate-700">
+                    <span className={cn("mr-2 rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+                      timed ? "bg-navy/10 text-navy" : "bg-primary/10 text-primary")}>{label}</span>
+                    NBME {r.nbme_form} · Block {r.block_number}
+                    {timed && r.paused && <span className="ml-2 text-xs text-amber-700">· interrupted</span>}
+                  </div>
+                  <Button size="sm" onClick={() => navigate(to)}><PlayCircle className="size-4" /> Resume</Button>
+                </div>
+              );
+            })}
           </div>
         )}
 

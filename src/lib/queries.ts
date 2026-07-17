@@ -122,23 +122,76 @@ export async function createBlockSession(
 // ── Timed-block pause / resume (state lives in Supabase, not localStorage) ────
 
 /**
- * The user's most recent UNFINISHED timed block, if any — for "Resume".
- * Pass form+block to find the one for a specific block (Exam resume); omit for
- * the most recent of any (Home banner).
+ * The user's most recent UNFINISHED session of `mode` (default 'block'), for
+ * "Resume". Pass form+block to scope to a specific block.
  */
-export async function getUnfinishedBlock(userId: string, form?: number, block?: number): Promise<BlockSession | null> {
+export async function getUnfinishedBlock(
+  userId: string,
+  form?: number,
+  block?: number,
+  mode: SessionMode = "block"
+): Promise<BlockSession | null> {
   if (PREVIEW) return null;
   let q = supabase
     .from("block_sessions")
     .select("*")
     .eq("user_id", userId)
-    .eq("mode", "block")
+    .eq("mode", mode)
     .eq("is_complete", false);
   if (form != null) q = q.eq("nbme_form", form);
   if (block != null) q = q.eq("block_number", block);
   const { data, error } = await q.order("started_at", { ascending: false }).limit(1);
   if (error) throw error;
   return (data?.[0] ?? null) as BlockSession | null;
+}
+
+/**
+ * All resumable sittings for the Home banner — unfinished TIMED and PRACTICE
+ * sessions. Deduped to the most recent per (mode, form, block) so a pile of old
+ * abandoned sessions doesn't clutter Home; newest first.
+ */
+export async function getResumableSessions(userId: string): Promise<BlockSession[]> {
+  if (PREVIEW) return [];
+  const { data, error } = await supabase
+    .from("block_sessions")
+    .select("*")
+    .eq("user_id", userId)
+    .in("mode", ["block", "practice"])
+    .eq("is_complete", false)
+    .order("started_at", { ascending: false });
+  if (error) throw error;
+  const seen = new Set<string>();
+  const out: BlockSession[] = [];
+  for (const s of (data ?? []) as BlockSession[]) {
+    const key = `${s.mode}:${s.nbme_form}:${s.block_number}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
+/**
+ * How many DISTINCT questions have been answered in a session — the authoritative
+ * resume position for practice (practice records an attempt per Check, so this is
+ * robust even for sessions started before block_progress persistence existed).
+ */
+export async function countAnsweredInSession(sessionId: string): Promise<number> {
+  if (PREVIEW) return 0;
+  const { data, error } = await supabase
+    .from("attempts")
+    .select("question_id")
+    .eq("block_session_id", sessionId)
+    .not("selected_letter", "is", null);
+  if (error) throw error;
+  return new Set(((data ?? []) as { question_id: string }[]).map((r) => r.question_id)).size;
+}
+
+/** Delete the in-progress scratch for a session (practice finish; timed uses submitBlock). */
+export async function clearBlockProgress(sessionId: string): Promise<void> {
+  if (PREVIEW) return;
+  const { error } = await supabase.from("block_progress").delete().eq("block_session_id", sessionId);
+  if (error) throw error;
 }
 
 /** Load the partial answers saved for an unsubmitted block. */
