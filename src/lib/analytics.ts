@@ -34,8 +34,10 @@ export interface AnalyticsAttempt {
   discipline: string;
   system: string;
   questionType: string;
-  mode: string | null; // owning session mode: block | full_exam | practice
+  mode: string | null; // owning session mode: block | full_exam | practice | custom
+  paused: boolean; // owning block was interrupted — excluded from pacing/stamina
   secondsSpent: number | null;
+  firstAnswerSeconds: number | null; // reasoning time (shown → first commit)
 }
 
 export interface FormScore {
@@ -186,14 +188,18 @@ export function accuracyByTag(
     .sort((x, y) => x.accuracy - y.accuracy || y.total - x.total || x.label.localeCompare(y.label));
 }
 
-/** Accuracy by position within a block (1..20), bucketed into fifths for signal. */
+/**
+ * Accuracy by position within a block (quarters). Excludes interrupted (paused)
+ * blocks — a block you walked away from mid-run isn't a clean timing sample.
+ */
 export function pacingByPosition(attempts: AnalyticsAttempt[]): Bucket[] {
   const ranges: [string, number, number][] = [
     ["Q1–5", 1, 5], ["Q6–10", 6, 10], ["Q11–15", 11, 15], ["Q16–20", 16, 20],
   ];
+  const clean = attempts.filter((a) => !a.paused);
   return ranges.map(([label, lo, hi]) => {
     let correct = 0, total = 0;
-    for (const a of attempts) {
+    for (const a of clean) {
       const pos = ((a.qNumber - 1) % 20) + 1;
       if (pos < lo || pos > hi) continue;
       if (a.finalLetter == null) { total++; continue; }
@@ -308,9 +314,90 @@ export function tagTrendByForm(
   return { forms, rows };
 }
 
-/** Accuracy by block number — stamina. Restrict to full-exam sittings when asked. */
+// ── Four-level drill-down (form → block → question; never blended) ───────────
+
+const isTimed = (m: string | null) => m === "block" || m === "full_exam";
+
+export interface BlockSummary {
+  block: number;
+  timed: Bucket;            // accuracy over timed sittings of this block
+  practice: Bucket;         // accuracy over practice/custom sittings
+  avgTimedSeconds: number | null; // mean dwell/question, timed
+  interrupted: boolean;     // any timed attempt in this block was paused
+}
+
+/** Per-block breakdown WITHIN one form — split timed vs practice, each discrete. */
+export function blocksForForm(attempts: AnalyticsAttempt[], form: number): BlockSummary[] {
+  const byBlock = new Map<number, AnalyticsAttempt[]>();
+  for (const a of attempts) {
+    if (a.nbmeForm !== form) continue;
+    const arr = byBlock.get(a.blockNumber);
+    if (arr) arr.push(a); else byBlock.set(a.blockNumber, [a]);
+  }
+  const bucket = (rows: AnalyticsAttempt[]): Bucket => {
+    let correct = 0, total = 0;
+    for (const a of rows) { total++; if (a.finalLetter != null && a.finalLetter === a.correctLetter) correct++; }
+    return { label: "", correct, total, accuracy: total ? correct / total : 0 };
+  };
+  return [...byBlock.entries()].sort((a, b) => a[0] - b[0]).map(([block, rows]) => {
+    const timedRows = rows.filter((a) => isTimed(a.mode));
+    const secs = timedRows.map((a) => a.secondsSpent).filter((s): s is number => s != null);
+    return {
+      block,
+      timed: bucket(timedRows),
+      practice: bucket(rows.filter((a) => a.mode === "practice" || a.mode === "custom")),
+      avgTimedSeconds: secs.length ? Math.round(secs.reduce((x, y) => x + y, 0) / secs.length) : null,
+      interrupted: timedRows.some((a) => a.paused),
+    };
+  });
+}
+
+export interface QDrillRow {
+  questionId: string;
+  qNumber: number;
+  finalLetter: string | null;
+  correctLetter: string;
+  correct: boolean;
+  secondsSpent: number | null;
+  firstAnswerSeconds: number | null;
+  outcome: ChangeOutcome | null; // first-instinct behavior
+  errorTag: ErrorTag | null;
+  mode: string | null;
+  paused: boolean;
+}
+
+/** Per-question rows for ONE block of ONE form (latest attempt each), q_number order. */
+export function questionsForBlock(attempts: AnalyticsAttempt[], form: number, block: number): QDrillRow[] {
+  const latest = new Map<string, AnalyticsAttempt>();
+  for (const a of attempts) {
+    if (a.nbmeForm !== form || a.blockNumber !== block) continue;
+    const prev = latest.get(a.questionId);
+    if (!prev || a.createdAt > prev.createdAt) latest.set(a.questionId, a);
+  }
+  return [...latest.values()]
+    .sort((x, y) => x.qNumber - y.qNumber)
+    .map((a) => ({
+      questionId: a.questionId,
+      qNumber: a.qNumber,
+      finalLetter: a.finalLetter,
+      correctLetter: a.correctLetter,
+      correct: a.finalLetter != null && a.finalLetter === a.correctLetter,
+      secondsSpent: a.secondsSpent,
+      firstAnswerSeconds: a.firstAnswerSeconds,
+      outcome: changeOutcome(a),
+      errorTag: a.errorTag,
+      mode: a.mode,
+      paused: a.paused,
+    }));
+}
+
+/**
+ * Accuracy by block number — stamina. Restrict to full-exam sittings when asked.
+ * Excludes interrupted (paused) blocks, same as pacing.
+ */
 export function staminaByBlock(attempts: AnalyticsAttempt[], fullExamOnly = true): Bucket[] {
-  const pool = fullExamOnly ? attempts.filter((a) => a.mode === "full_exam") : attempts;
+  const notPaused = attempts.filter((a) => !a.paused);
+  const pool = fullExamOnly ? notPaused.filter((a) => a.mode === "full_exam") : notPaused;
   const byBlock = new Map<number, { correct: number; total: number }>();
   for (const a of pool) {
     let b = byBlock.get(a.blockNumber);

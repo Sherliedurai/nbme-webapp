@@ -17,12 +17,14 @@ interface Props {
   attempts: AnalyticsAttempt[];
   /** Wall-clock seconds used of the 30:00 budget. */
   timeUsedSec: number;
+  /** The block was paused/resumed — its timing isn't a clean sample. */
+  interrupted?: boolean;
   onReviewQuestion: (qNumber: number) => void;
   onReviewAll: () => void;
   onHome: () => void;
 }
 
-export default function BlockReport({ title, attempts, timeUsedSec, onReviewQuestion, onReviewAll, onHome }: Props) {
+export default function BlockReport({ title, attempts, timeUsedSec, interrupted = false, onReviewQuestion, onReviewAll, onHome }: Props) {
   const total = attempts.length;
   const correct = useMemo(() => attempts.filter((a) => a.finalLetter != null && a.finalLetter === a.correctLetter).length, [attempts]);
   const fi = useMemo(() => firstInstinct(attempts), [attempts]);
@@ -94,7 +96,14 @@ export default function BlockReport({ title, attempts, timeUsedSec, onReviewQues
         <section>
           <SectionHead icon={Gauge} title="Pacing — accuracy by position"
             sub="A dropoff in Q16–20 means you rushed the tail." />
-          <AccuracyBars buckets={pacing} />
+          {interrupted ? (
+            <Card><CardContent className="flex items-start gap-3 p-4 text-sm text-amber-800">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              This block was paused/resumed — pacing isn't a clean timing sample, so it's excluded here and from your stamina trend. Score still counts.
+            </CardContent></Card>
+          ) : (
+            <AccuracyBars buckets={pacing} />
+          )}
         </section>
 
         {/* ── Missed questions ─────────────────────────────────────────────── */}

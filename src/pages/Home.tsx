@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getForms, type FormSummary } from "@/lib/queries";
+import { getForms, getUnfinishedBlock, type FormSummary } from "@/lib/queries";
+import type { BlockSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { BarChart3, BookOpen, LogOut, PlayCircle, Timer, Layers, FileText, SlidersHorizontal } from "lucide-react";
+import { BarChart3, BookOpen, LogOut, PlayCircle, Timer, Layers, FileText, SlidersHorizontal, RotateCcw } from "lucide-react";
 
 type Mode = "practice" | "block" | "full_exam";
 
@@ -22,6 +23,7 @@ export default function Home() {
   const [form, setForm] = useState<number | null>(null);
   const [mode, setMode] = useState<Mode>("practice");
   const [error, setError] = useState<string | null>(null);
+  const [resume, setResume] = useState<BlockSession | null>(null);
 
   useEffect(() => {
     getForms()
@@ -31,6 +33,11 @@ export default function Home() {
       })
       .catch((e) => setError(e.message ?? "Failed to load forms"));
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    getUnfinishedBlock(user.id).then(setResume).catch(() => {});
+  }, [user]);
 
   const active = MODES.find((m) => m.id === mode)!;
   const selected = forms?.find((f) => f.form === form) ?? null;
@@ -49,6 +56,24 @@ export default function Home() {
 
       <main className="mx-auto max-w-4xl px-6 py-10">
         {error && <p className="mb-6 rounded-md bg-incorrect-soft px-4 py-3 text-sm text-incorrect">{error}</p>}
+
+        {/* ── Resume where you left off ───────────────────────────────────── */}
+        {resume && resume.nbme_form != null && resume.block_number != null && (
+          <div className="mb-6 flex items-center justify-between gap-4 rounded-lg border border-primary/40 bg-accent px-5 py-4">
+            <div className="flex items-center gap-3">
+              <RotateCcw className="size-5 shrink-0 text-primary" />
+              <div>
+                <div className="text-sm font-semibold text-slate-800">Resume where you left off</div>
+                <div className="text-xs text-muted-foreground">
+                  NBME {resume.nbme_form} · Block {resume.block_number} — timed block in progress{resume.paused ? " · interrupted" : ""}.
+                </div>
+              </div>
+            </div>
+            <Button size="sm" onClick={() => navigate(`/exam/${resume.nbme_form}/${resume.block_number}`)}>
+              <PlayCircle className="size-4" /> Resume
+            </Button>
+          </div>
+        )}
 
         {/* ── Step 1: pick a form ─────────────────────────────────────────── */}
         <h1 className="text-2xl font-semibold text-slate-800">Choose a form</h1>

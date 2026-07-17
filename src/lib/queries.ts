@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 import { PREVIEW } from "./preview";
-import type { AnswerKeyRow, BlockSession, ExamQuestion, FullQuestion, ReviewAnswer, SessionMode } from "./types";
+import type { AnswerKeyRow, BlockProgressRow, BlockSession, ExamQuestion, FullQuestion, ReviewAnswer, SessionMode } from "./types";
 import type { AnalyticsAttempt, ErrorTag } from "./analytics";
 
 const EXAM_COLUMNS =
@@ -90,7 +90,8 @@ export async function createBlockSession(
   userId: string,
   form: number | null,
   blockNumber: number | null,
-  mode: SessionMode = "block"
+  mode: SessionMode = "block",
+  timeLimitSeconds: number | null = null
 ): Promise<BlockSession> {
   if (PREVIEW) {
     return {
@@ -102,15 +103,128 @@ export async function createBlockSession(
       started_at: new Date().toISOString(),
       submitted_at: null,
       is_complete: false,
+      time_limit_seconds: timeLimitSeconds,
+      paused: false,
+      paused_at: null,
+      total_paused_seconds: 0,
+      current_index: 0,
     };
   }
   const { data, error } = await supabase
     .from("block_sessions")
-    .insert({ user_id: userId, nbme_form: form, block_number: blockNumber, mode })
+    .insert({ user_id: userId, nbme_form: form, block_number: blockNumber, mode, time_limit_seconds: timeLimitSeconds })
     .select()
     .single();
   if (error) throw error;
   return data as BlockSession;
+}
+
+// ── Timed-block pause / resume (state lives in Supabase, not localStorage) ────
+
+/**
+ * The user's most recent UNFINISHED timed block, if any — for "Resume".
+ * Pass form+block to find the one for a specific block (Exam resume); omit for
+ * the most recent of any (Home banner).
+ */
+export async function getUnfinishedBlock(userId: string, form?: number, block?: number): Promise<BlockSession | null> {
+  if (PREVIEW) return null;
+  let q = supabase
+    .from("block_sessions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("mode", "block")
+    .eq("is_complete", false);
+  if (form != null) q = q.eq("nbme_form", form);
+  if (block != null) q = q.eq("block_number", block);
+  const { data, error } = await q.order("started_at", { ascending: false }).limit(1);
+  if (error) throw error;
+  return (data?.[0] ?? null) as BlockSession | null;
+}
+
+/** Load the partial answers saved for an unsubmitted block. */
+export async function loadBlockProgress(sessionId: string): Promise<BlockProgressRow[]> {
+  if (PREVIEW) return [];
+  const { data, error } = await supabase
+    .from("block_progress")
+    .select("question_id, selected_letter, first_letter, first_answer_seconds, seconds_spent, flagged, struck_letters, highlight_html")
+    .eq("block_session_id", sessionId);
+  if (error) throw error;
+  return ((data ?? []) as any[]).map((r) => ({
+    question_id: r.question_id,
+    selected_letter: r.selected_letter ?? null,
+    first_letter: r.first_letter ?? null,
+    first_answer_seconds: r.first_answer_seconds ?? null,
+    seconds_spent: r.seconds_spent ?? 0,
+    flagged: !!r.flagged,
+    struck_letters: Array.isArray(r.struck_letters) ? r.struck_letters : [],
+    highlight_html: r.highlight_html ?? null,
+  }));
+}
+
+/** Upsert one question's in-progress answer. */
+export async function saveBlockProgress(userId: string, sessionId: string, row: BlockProgressRow): Promise<void> {
+  if (PREVIEW) return;
+  const { error } = await supabase
+    .from("block_progress")
+    .upsert(
+      {
+        block_session_id: sessionId,
+        user_id: userId,
+        question_id: row.question_id,
+        selected_letter: row.selected_letter,
+        first_letter: row.first_letter,
+        first_answer_seconds: row.first_answer_seconds,
+        seconds_spent: Math.round(row.seconds_spent),
+        flagged: row.flagged,
+        struck_letters: row.struck_letters,
+        highlight_html: row.highlight_html,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "block_session_id,question_id" }
+    );
+  if (error) throw error;
+}
+
+/** Persist which question she's on (so resume lands exactly there). */
+export async function updateSessionIndex(sessionId: string, currentIndex: number): Promise<void> {
+  if (PREVIEW) return;
+  const { error } = await supabase.from("block_sessions").update({ current_index: currentIndex }).eq("id", sessionId);
+  if (error) throw error;
+}
+
+/** Suspend: stop the clock and flag the block interrupted. */
+export async function pauseSession(sessionId: string): Promise<void> {
+  if (PREVIEW) return;
+  const { error } = await supabase
+    .from("block_sessions")
+    .update({ paused: true, paused_at: new Date().toISOString() })
+    .eq("id", sessionId)
+    .is("paused_at", null); // don't overwrite an existing pause start
+  if (error) throw error;
+}
+
+/** Resume: roll the elapsed pause into total_paused_seconds and restart the clock. */
+export async function resumeSession(sessionId: string): Promise<BlockSession> {
+  if (PREVIEW) throw new Error("no resume in preview");
+  const { data: cur, error: readErr } = await supabase
+    .from("block_sessions")
+    .select("*")
+    .eq("id", sessionId)
+    .single();
+  if (readErr) throw readErr;
+  const s = cur as BlockSession;
+  if (s.paused_at) {
+    const delta = Math.max(0, Math.round((Date.now() - Date.parse(s.paused_at)) / 1000));
+    const { data, error } = await supabase
+      .from("block_sessions")
+      .update({ paused_at: null, total_paused_seconds: s.total_paused_seconds + delta })
+      .eq("id", sessionId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as BlockSession;
+  }
+  return s;
 }
 
 export interface AttemptInput {
@@ -120,6 +234,7 @@ export interface AttemptInput {
   changed: boolean; // final != first
   is_correct: boolean;
   seconds_spent: number;
+  first_answer_seconds?: number | null; // reasoning time (shown → first commit)
   flagged: boolean;
   is_review?: boolean; // cold re-attempt from the review deck — excluded from analytics
 }
@@ -143,9 +258,13 @@ export async function submitBlock(
 
   const { error: sessionError } = await supabase
     .from("block_sessions")
-    .update({ submitted_at: new Date().toISOString(), is_complete: true })
+    .update({ submitted_at: new Date().toISOString(), is_complete: true, paused_at: null })
     .eq("id", sessionId);
   if (sessionError) throw sessionError;
+
+  // The block is finalized in `attempts` now — clear the in-progress scratch.
+  const { error: progressError } = await supabase.from("block_progress").delete().eq("block_session_id", sessionId);
+  if (progressError) throw progressError;
 
   const map = new Map<string, string>();
   for (const r of (data ?? []) as { id: string; question_id: string }[]) map.set(r.question_id, r.id);
@@ -212,9 +331,9 @@ export async function getAttemptsWithQuestions(userId: string): Promise<Analytic
   const { data, error } = await supabase
     .from("attempts")
     .select(
-      "id, question_id, created_at, selected_letter, first_letter, changed, error_tag, seconds_spent, flagged, " +
+      "id, question_id, created_at, selected_letter, first_letter, changed, error_tag, seconds_spent, first_answer_seconds, flagged, " +
         "questions!inner ( correct_letter, q_number, nbme_form, block_number, discipline_tag, system_tag, question_type ), " +
-        "block_sessions ( mode )"
+        "block_sessions ( mode, paused )"
     )
     .eq("user_id", userId)
     .eq("is_review", false); // cold re-attempts never touch score/accuracy/trend analytics
@@ -239,7 +358,9 @@ export async function getAttemptsWithQuestions(userId: string): Promise<Analytic
       system: q?.system_tag ?? "—",
       questionType: q?.question_type ?? "—",
       mode: s?.mode ?? null,
+      paused: !!s?.paused,
       secondsSpent: r.seconds_spent ?? null,
+      firstAnswerSeconds: r.first_answer_seconds ?? null,
     } as AnalyticsAttempt;
   });
 }
@@ -282,8 +403,10 @@ function previewAnalyticsAttempts(): AnalyticsAttempt[] {
         discipline: disciplines[q % disciplines.length],
         system: systems[q % systems.length],
         questionType: qtypes[q % qtypes.length],
-        mode: "full_exam",
+        mode: block === 1 ? "block" : "practice",
+        paused: false,
         secondsSpent: 40 + ((q * 7) % 60),
+        firstAnswerSeconds: 15 + ((q * 5) % 40),
       });
     }
   }

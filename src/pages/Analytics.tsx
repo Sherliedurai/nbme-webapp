@@ -6,9 +6,11 @@ import {
   ERROR_TAGS,
   ERROR_TAG_META,
   accuracyByTag,
+  blocksForForm,
   errorTypeDistribution,
   firstInstinct,
   pacingByPosition,
+  questionsForBlock,
   reviewDeckRows,
   scoresByForm,
   staminaByBlock,
@@ -17,12 +19,13 @@ import {
   type AnalyticsAttempt,
   type Bucket,
   type ErrorTag,
+  type QDrillRow,
   type WrongRow,
 } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, ArrowLeft, ChevronRight, Download, FileText, Gauge, Layers, LineChart, ListChecks, Repeat, Tags, TrendingDown } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronRight, Download, FileText, FolderTree, Gauge, Layers, LineChart, ListChecks, Repeat, Tags, TrendingDown } from "lucide-react";
 
 export default function Analytics() {
   const { user } = useAuth();
@@ -31,11 +34,25 @@ export default function Analytics() {
   const [error, setError] = useState<string | null>(null);
   // null = all forms; otherwise scope the whole dashboard to one form.
   const [formFilter, setFormFilter] = useState<number | null>(null);
+  const [drillBlock, setDrillBlock] = useState<number | null>(null); // block within the selected form
 
   useEffect(() => {
     if (!user) return;
     getAttemptsWithQuestions(user.id).then(setAttempts).catch((e) => setError(e?.message ?? "Failed to load analytics."));
   }, [user]);
+
+  // Changing the form resets the block drill.
+  useEffect(() => { setDrillBlock(null); }, [formFilter]);
+
+  // Level 4/3 drill — blocks within the selected form, questions within a block.
+  const drillBlocks = useMemo(
+    () => (attempts && formFilter != null ? blocksForForm(attempts, formFilter) : []),
+    [attempts, formFilter]
+  );
+  const drillQuestions = useMemo(
+    () => (attempts && formFilter != null && drillBlock != null ? questionsForBlock(attempts, formFilter, drillBlock) : []),
+    [attempts, formFilter, drillBlock]
+  );
 
   // Per-form scores are computed over ALL attempts (the whole point is not to pool).
   const formScores = useMemo(() => (attempts ? scoresByForm(attempts) : []), [attempts]);
@@ -98,6 +115,10 @@ export default function Analytics() {
     navigate("/review/queue", {
       state: { questionIds: wrongFiltered.map((r) => r.questionId), focusId, title: "Wrong-answer review" },
     });
+
+  // Drill terminal: open one question in review.
+  const openOneInReview = (questionId: string) =>
+    navigate("/review/queue", { state: { questionIds: [questionId], focusId: questionId, title: "Question review" } });
 
   // Anki export — her incorrect + flagged set as a selection JSON for genanki.
   const deckRows = useMemo(() => (attempts ? reviewDeckRows(attempts) : []), [attempts]);
@@ -200,6 +221,97 @@ export default function Analytics() {
                 </button>
               ))}
             </div>
+          </section>
+        )}
+
+        {/* ── Drill: form → block → question (each level discrete) ─────────── */}
+        {attempts && attempts.length > 0 && (
+          <section>
+            <SectionHead icon={FolderTree} title="Drill down — form → block → question"
+              sub="Every level stays separate — never collapsed into one blended number." />
+            <div className="mb-3 flex flex-wrap items-center gap-1.5 text-sm">
+              <button onClick={() => setFormFilter(null)} className={cn("rounded px-2 py-1", formFilter == null ? "font-semibold text-slate-800" : "text-primary hover:underline")}>All forms</button>
+              {formFilter != null && (<>
+                <span className="text-slate-400">›</span>
+                <button onClick={() => setDrillBlock(null)} className={cn("rounded px-2 py-1", drillBlock == null ? "font-semibold text-slate-800" : "text-primary hover:underline")}>NBME {formFilter}</button>
+              </>)}
+              {drillBlock != null && (<>
+                <span className="text-slate-400">›</span>
+                <span className="rounded px-2 py-1 font-semibold text-slate-800">Block {drillBlock}</span>
+              </>)}
+            </div>
+
+            {formFilter == null ? (
+              <Card><CardContent className="p-6 text-sm text-muted-foreground">
+                Pick a form in <strong>Scores by form</strong> above to drill into its blocks, then a block, then a question.
+              </CardContent></Card>
+            ) : drillBlock == null ? (
+              drillBlocks.length === 0 ? (
+                <Card><CardContent className="p-6 text-sm text-muted-foreground">No attempts on NBME {formFilter} yet.</CardContent></Card>
+              ) : (
+                <Card><CardContent className="p-0">
+                  <div className="overflow-x-auto"><table className="w-full text-sm">
+                    <thead><tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="px-4 py-2 font-medium">Block</th>
+                      <th className="px-4 py-2 font-medium">Timed</th>
+                      <th className="px-4 py-2 font-medium">Practice</th>
+                      <th className="px-4 py-2 font-medium">Avg time (timed)</th>
+                      <th className="px-4 py-2"></th>
+                    </tr></thead>
+                    <tbody>
+                      {drillBlocks.map((b) => (
+                        <tr key={b.block} className="cursor-pointer border-t hover:bg-accent" onClick={() => setDrillBlock(b.block)}>
+                          <td className="px-4 py-2.5 font-medium text-slate-800">
+                            Block {b.block}
+                            {b.interrupted && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">interrupted</span>}
+                          </td>
+                          <td className="px-4 py-2.5 tabular-nums">{acc(b.timed)}</td>
+                          <td className="px-4 py-2.5 tabular-nums">{acc(b.practice)}</td>
+                          <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{b.avgTimedSeconds != null ? `${b.avgTimedSeconds}s/q` : "—"}</td>
+                          <td className="px-4 py-2.5 text-right"><ChevronRight className="inline size-4 text-slate-400" /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table></div>
+                </CardContent></Card>
+              )
+            ) : (
+              <Card><CardContent className="p-0">
+                <div className="overflow-x-auto"><table className="w-full text-sm">
+                  <thead><tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="px-4 py-2 font-medium">Q</th>
+                    <th className="px-4 py-2 font-medium">Result</th>
+                    <th className="px-4 py-2 font-medium">You · Correct</th>
+                    <th className="px-4 py-2 font-medium">Time</th>
+                    <th className="px-4 py-2 font-medium">First-instinct</th>
+                    <th className="px-4 py-2 font-medium">Error</th>
+                    <th className="px-4 py-2"></th>
+                  </tr></thead>
+                  <tbody>
+                    {drillQuestions.map((r) => (
+                      <tr key={r.questionId} className="cursor-pointer border-t hover:bg-accent" onClick={() => openOneInReview(r.questionId)}>
+                        <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{((r.qNumber - 1) % 20) + 1}</td>
+                        <td className="px-4 py-2.5">{r.correct
+                          ? <span className="font-semibold text-correct">✓</span>
+                          : <span className="font-semibold text-incorrect">✗</span>}</td>
+                        <td className="px-4 py-2.5 tabular-nums">
+                          <span className={r.correct ? "text-slate-600" : "text-incorrect"}>{r.finalLetter ?? "—"}</span>
+                          <span className="mx-1 text-slate-400">·</span>
+                          <span className="text-correct">{r.correctLetter}</span>
+                        </td>
+                        <td className="px-4 py-2.5 tabular-nums text-muted-foreground">
+                          {r.secondsSpent != null ? `${r.secondsSpent}s` : "—"}
+                          {r.firstAnswerSeconds != null && <span className="text-slate-400"> · 1st {r.firstAnswerSeconds}s</span>}
+                        </td>
+                        <td className="px-4 py-2.5">{outcomeBadge(r.outcome)}</td>
+                        <td className="px-4 py-2.5 text-xs text-amber-700">{r.errorTag ? ERROR_TAG_META[r.errorTag].label : ""}</td>
+                        <td className="px-4 py-2.5 text-right"><ChevronRight className="inline size-4 text-slate-400" /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table></div>
+              </CardContent></Card>
+            )}
           </section>
         )}
 
@@ -586,3 +698,17 @@ function AccuracyBars({ buckets }: { buckets: Bucket[] }) {
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const totalTags = (o: Record<ErrorTag, number>) => ERROR_TAGS.reduce((s, t) => s + o[t as ErrorTag], 0);
+
+const acc = (b: Bucket) => (b.total ? `${Math.round(b.accuracy * 100)}% · ${b.correct}/${b.total}` : "—");
+
+function outcomeBadge(o: QDrillRow["outcome"]) {
+  if (o == null) return <span className="text-slate-400">—</span>;
+  const map: Record<string, { label: string; cls: string }> = {
+    unchanged: { label: "kept", cls: "text-slate-500" },
+    incorrect_to_correct: { label: "→ fixed", cls: "text-correct" },
+    wrong_to_wrong: { label: "→ still wrong", cls: "text-amber-600" },
+    correct_to_incorrect: { label: "→ broke it", cls: "text-incorrect font-semibold" },
+  };
+  const m = map[o] ?? { label: o, cls: "text-slate-500" };
+  return <span className={cn("text-xs", m.cls)}>{m.label}</span>;
+}

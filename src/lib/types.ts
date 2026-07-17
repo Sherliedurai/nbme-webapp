@@ -49,6 +49,24 @@ export interface BlockSession {
   started_at: string;
   submitted_at: string | null;
   is_complete: boolean;
+  // Pause/resume clock (0008). Untimed sessions leave time_limit_seconds null.
+  time_limit_seconds: number | null;
+  paused: boolean; // ever interrupted — excluded from pacing/stamina, still counts for score
+  paused_at: string | null; // start of the current suspension; null while running
+  total_paused_seconds: number;
+  current_index: number; // question to restore to
+}
+
+/** One question's in-progress answer for an unsubmitted block (block_progress). */
+export interface BlockProgressRow {
+  question_id: string;
+  selected_letter: string | null;
+  first_letter: string | null;
+  first_answer_seconds: number | null;
+  seconds_spent: number;
+  flagged: boolean;
+  struck_letters: string[];
+  highlight_html: string | null;
 }
 
 export interface Attempt {
