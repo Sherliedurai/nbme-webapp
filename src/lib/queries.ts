@@ -194,6 +194,52 @@ export async function clearBlockProgress(sessionId: string): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * The most recent COMPLETED timed block for this form+block, with its questions
+ * and the answers she gave — so re-entering a finished block shows it as done
+ * (review/retake) instead of silently spawning a new empty session.
+ */
+export async function getCompletedBlock(
+  userId: string,
+  form: number,
+  block: number
+): Promise<{ session: BlockSession; questions: FullQuestion[]; answers: ReviewAnswer[] } | null> {
+  if (PREVIEW) return null;
+  const { data: sess, error: sErr } = await supabase
+    .from("block_sessions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("mode", "block")
+    .eq("nbme_form", form)
+    .eq("block_number", block)
+    .eq("is_complete", true)
+    .order("submitted_at", { ascending: false })
+    .limit(1);
+  if (sErr) throw sErr;
+  const session = sess?.[0] as BlockSession | undefined;
+  if (!session) return null;
+
+  const questions = await getFullQuestions(form, block);
+  const { data: atts, error: aErr } = await supabase
+    .from("attempts")
+    .select("id, question_id, selected_letter, seconds_spent, flagged, error_tag")
+    .eq("user_id", userId)
+    .eq("block_session_id", session.id);
+  if (aErr) throw aErr;
+  const byQ = new Map(((atts ?? []) as any[]).map((a) => [a.question_id, a]));
+  const answers: ReviewAnswer[] = questions.map((q) => {
+    const a = byQ.get(q.id);
+    return {
+      selectedLetter: a?.selected_letter ?? null,
+      secondsSpent: a?.seconds_spent ?? 0,
+      flagged: !!a?.flagged,
+      attemptId: a?.id ?? null,
+      errorTag: (a?.error_tag ?? null) as ErrorTag | null,
+    };
+  });
+  return { session, questions, answers };
+}
+
 /** Load the partial answers saved for an unsubmitted block. */
 export async function loadBlockProgress(sessionId: string): Promise<BlockProgressRow[]> {
   if (PREVIEW) return [];
@@ -302,12 +348,20 @@ export async function submitBlock(
   attempts: AttemptInput[]
 ): Promise<Map<string, string>> {
   if (PREVIEW) return new Map(attempts.map((a) => [a.question_id, `preview-attempt-${a.question_id}`]));
-  const rows = attempts.map((a) => ({ ...a, user_id: userId, block_session_id: sessionId }));
-  const { data, error: attemptsError } = await supabase
-    .from("attempts")
-    .insert(rows)
-    .select("id, question_id");
-  if (attemptsError) throw attemptsError;
+  // NEVER write attempts for unanswered questions — a blank row (is_correct=false,
+  // selected_letter=null) pollutes analytics and, on a spurious re-entry, produced
+  // 20 empty attempts that broke a block's numbers. Only answered questions persist.
+  const answered = attempts.filter((a) => a.selected_letter != null);
+  const map = new Map<string, string>();
+  if (answered.length > 0) {
+    const rows = answered.map((a) => ({ ...a, user_id: userId, block_session_id: sessionId }));
+    const { data, error: attemptsError } = await supabase
+      .from("attempts")
+      .insert(rows)
+      .select("id, question_id");
+    if (attemptsError) throw attemptsError;
+    for (const r of (data ?? []) as { id: string; question_id: string }[]) map.set(r.question_id, r.id);
+  }
 
   const { error: sessionError } = await supabase
     .from("block_sessions")
@@ -319,8 +373,6 @@ export async function submitBlock(
   const { error: progressError } = await supabase.from("block_progress").delete().eq("block_session_id", sessionId);
   if (progressError) throw progressError;
 
-  const map = new Map<string, string>();
-  for (const r of (data ?? []) as { id: string; question_id: string }[]) map.set(r.question_id, r.id);
   return map;
 }
 

@@ -5,6 +5,7 @@ import {
   createBlockSession,
   getAnswerKey,
   getBlockCount,
+  getCompletedBlock,
   getExamQuestions,
   getFullQuestions,
   getUnfinishedBlock,
@@ -29,11 +30,12 @@ import LabValuesModal from "@/components/exam/LabValuesModal";
 import CalculatorModal from "@/components/exam/CalculatorModal";
 import SubmitReviewModal from "@/components/exam/SubmitReviewModal";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
 const BLOCK_SECONDS = 30 * 60;
 
-type Phase = "loading" | "active" | "submitting" | "report" | "review" | "error";
+type Phase = "loading" | "active" | "submitting" | "report" | "review" | "completed" | "error";
 
 function freshStates(n: number): QuestionState[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -75,6 +77,7 @@ export default function Exam() {
   const [report, setReport] = useState<{ attempts: AnalyticsAttempt[]; timeUsedSec: number } | null>(null);
   const [reviewData, setReviewData] = useState<{ questions: FullQuestion[]; answers: ReviewAnswer[] } | null>(null);
   const [reviewFocus, setReviewFocus] = useState<{ focusId?: string; allMode: boolean }>({ allMode: false });
+  const [completed, setCompleted] = useState<{ questions: FullQuestion[]; answers: ReviewAnswer[] } | null>(null);
 
   const currentIndexRef = useRef(0);
   const enterRef = useRef<number>(Date.now());
@@ -88,7 +91,26 @@ export default function Exam() {
   sessionIdRef.current = sessionId;
   const attemptIdsRef = useRef<Map<string, string>>(new Map());
 
-  // ── Load: resume the unfinished block for THIS form/block, or start fresh ──
+  // Start a brand-new sitting (first attempt, or an EXPLICIT retake). This is the
+  // ONLY place a timed session is created — never on re-entering a finished block.
+  const startFresh = useCallback(async (qs?: ExamQuestion[]) => {
+    if (!user) return;
+    const list = qs ?? questionsRef.current;
+    const session = await createBlockSession(user.id, form, blockNumber, "block", BLOCK_SECONDS);
+    setSessionId(session.id);
+    setDeadline(Date.now() + BLOCK_SECONDS * 1000);
+    setStates(freshStates(list.length));
+    setCurrentIndex(0);
+    currentIndexRef.current = 0;
+    setInterrupted(false);
+    setCompleted(null);
+    enterRef.current = Date.now();
+    finalizedRef.current = false;
+    submittingRef.current = false;
+    setPhase("active");
+  }, [user, form, blockNumber]);
+
+  // ── Load: resume an in-progress block, show a finished one, or start fresh ──
   useEffect(() => {
     if (!user) return;
     let active = true;
@@ -103,38 +125,41 @@ export default function Exam() {
         if (qs.length === 0) { setErrorMsg(`No questions found for block ${blockNumber}.`); setPhase("error"); return; }
         setBlockCount(count);
         setQuestions(qs);
+        questionsRef.current = qs;
 
-        let session: BlockSession;
-        let base = freshStates(qs.length);
-        let index = 0;
         if (existing) {
           // Resume: unfreeze the clock, restore answers + position.
-          session = existing.paused_at ? await resumeSession(existing.id) : existing;
+          const session = existing.paused_at ? await resumeSession(existing.id) : existing;
           const progress = await loadBlockProgress(existing.id);
           if (!active) return;
           const byQ = new Map(progress.map((p) => [p.question_id, p]));
-          base = qs.map((q, i): QuestionState => {
+          const base = qs.map((q, i): QuestionState => {
             const p = byQ.get(q.id);
             return p
               ? { selectedLetter: p.selected_letter, firstLetter: p.first_letter, struckLetters: p.struck_letters,
                   flagged: p.flagged, secondsSpent: p.seconds_spent, visited: true, highlightHtml: p.highlight_html }
               : { selectedLetter: null, firstLetter: null, struckLetters: [], flagged: false, secondsSpent: 0, visited: i === 0, highlightHtml: null };
           });
-          index = Math.min(Math.max(session.current_index, 0), qs.length - 1);
+          const index = Math.min(Math.max(session.current_index, 0), qs.length - 1);
           base[index] = { ...base[index], visited: true };
           setInterrupted(!!session.paused);
-        } else {
-          session = await createBlockSession(user.id, form, blockNumber, "block", BLOCK_SECONDS);
-          if (!active) return;
-          setInterrupted(false);
+          setSessionId(session.id);
+          setDeadline(Date.now() + remainingSeconds(session, Date.now()) * 1000);
+          setStates(base);
+          setCurrentIndex(index);
+          currentIndexRef.current = index;
+          enterRef.current = Date.now();
+          setPhase("active");
+          return;
         }
-        setSessionId(session.id);
-        setDeadline(Date.now() + remainingSeconds(session, Date.now()) * 1000);
-        setStates(base);
-        setCurrentIndex(index);
-        currentIndexRef.current = index;
-        enterRef.current = Date.now();
-        setPhase("active");
+
+        // No in-progress block. Is it already FINISHED? If so, show it as completed
+        // (review / explicit retake) — do NOT spawn a new empty session.
+        const done = await getCompletedBlock(user.id, form, blockNumber);
+        if (!active) return;
+        if (done) { setCompleted(done); setPhase("completed"); return; }
+
+        await startFresh(qs); // genuine first attempt
       } catch (e: any) {
         if (active) { setErrorMsg(e?.message ?? "Failed to load the block."); setPhase("error"); }
       }
@@ -314,7 +339,7 @@ export default function Exam() {
     return (
       <ReviewQueue
         questions={reviewData.questions} answers={reviewData.answers}
-        onExit={() => setPhase("report")} exitLabel="Back to report"
+        onExit={() => setPhase(completed ? "completed" : "report")} exitLabel={completed ? "Back" : "Back to report"}
         initialQuestionId={reviewFocus.focusId} defaultAllMode={reviewFocus.allMode}
         title={`Review · NBME ${form} · Block ${blockNumber}`}
       />
@@ -329,6 +354,34 @@ export default function Exam() {
         onReviewQuestion={(qNumber) => enterReview({ focusId: questions.find((q) => q.q_number === qNumber)?.id, allMode: false })}
         onHome={() => navigate("/")}
       />
+    );
+  }
+  if (phase === "completed" && completed) {
+    const total = completed.questions.length;
+    const correct = completed.answers.filter((a, i) => a.selectedLetter === completed.questions[i].correct_letter).length;
+    const answered = completed.answers.filter((a) => a.selectedLetter != null).length;
+    return (
+      <div className="grid min-h-screen place-items-center bg-background p-6">
+        <Card className="w-full max-w-md text-center">
+          <CardContent className="space-y-4 p-8">
+            <CheckCircle2 className="mx-auto size-9 text-correct" />
+            <div className="text-xs font-semibold uppercase tracking-widest text-primary">NBME {form} · Block {blockNumber} — already completed</div>
+            <div className="text-5xl font-bold tabular-nums text-slate-800">{correct}<span className="text-2xl text-muted-foreground">/{total}</span></div>
+            <div className="text-sm text-muted-foreground">
+              {Math.round((correct / total) * 100)}% · {answered} of {total} answered.
+              You've finished this block — nothing was re-recorded by opening it.
+            </div>
+            <div className="flex flex-col gap-2 pt-1">
+              <Button onClick={() => { setReviewData(completed); setReviewFocus({ allMode: true }); setPhase("review"); }}>Review answers</Button>
+              <Button variant="outline"
+                onClick={() => { if (window.confirm("Retake this block from scratch? This starts a new, separate sitting.")) startFresh(); }}>
+                Retake block (fresh sitting)
+              </Button>
+              <Button variant="ghost" onClick={() => navigate("/")}>Back to home</Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
   if (phase === "error") {

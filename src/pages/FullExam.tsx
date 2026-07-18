@@ -174,12 +174,13 @@ export default function FullExam() {
       const all = collectedRef.current;
       const key = await getAnswerKey(all.map((c) => c.question.id));
       for (const c of all) {
+        if (c.selectedLetter == null) continue; // never write attempts for unanswered questions
         c.attemptId = await recordAttempt(user.id, sessionId, {
           question_id: c.question.id,
           selected_letter: c.selectedLetter,
           first_letter: c.firstLetter,
           changed: c.firstLetter != null && c.firstLetter !== c.selectedLetter,
-          is_correct: c.selectedLetter != null && c.selectedLetter === key.get(c.question.id),
+          is_correct: c.selectedLetter === key.get(c.question.id),
           seconds_spent: c.secondsSpent,
           flagged: c.flagged,
         });
