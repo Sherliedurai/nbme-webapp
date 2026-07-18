@@ -30,6 +30,17 @@ BULLET = {"-", "–", "—", "•", "▪", "*"}
 DOTLEADER = re.compile(r"[.…]{6,}")          # table-of-contents dot leaders
 NUM = re.compile(r"^(\d{1,3})[.)]\s*(.*)$")        # numbered-question marker
 
+# Numbered Q-banks that are one long "N. <vignette> … The correct answer is X. <expl>"
+# per item. The generic num_boundary detector mis-fires on in-explanation
+# enumerations ("1. …2. …3. …") and OCR'd values ("10.3 g/dL"), which both
+# shatter a single HY item into fragments AND can let a real boundary hide.
+# For these two high-priority weak-area files we (a) gate boundaries on the
+# STRICTLY SEQUENTIAL item number (1,2,3,…), which rejects those false hits,
+# and (b) split each item at "The correct answer is" into a scenario facet
+# (grounds how_they_test) + a mechanism/Bottom-line facet (grounds high_yield).
+NUMBERED_BANKS_SPLIT = {"HY Genetics", "HY Communication_Ethics"}
+ANSWER_SPLIT = re.compile(r"\bThe correct answer is\b", re.I)
+
 FILE_TAGS = {
     "HY Arrows": ["physiology", "arrows"],
     "HY Biochem": ["biochemistry", "metabolism", "enzyme", "vitamin", "cofactor", "metabolic"],
@@ -152,6 +163,45 @@ def chunk_markers(lines, mode):
     return [norm(t) for t in items if len(t.strip()) > 15]
 
 
+def chunk_numbered_bank(lines):
+    """Segment a sequentially-numbered Q-bank (1., 2., 3., …) into one item per
+    question. A line is a boundary only if its number == the expected next item
+    number and it looks like a vignette start — so in-explanation '1./2./3.'
+    lists and OCR values ('10.3 g/dL') can never open a spurious item."""
+    items, cur, expected, started = [], [], 1, False
+    for s in lines:
+        m = NUM.match(s)
+        rest = m.group(2) if m else ""
+        if m and int(m.group(1)) == expected and (
+                rest == "" or rest[:1].isupper() or rest[:1] in '"“'):
+            started = True
+            if cur:
+                items.append(" ".join(cur)); cur = []
+            if rest:
+                cur.append(rest)
+            expected += 1
+            continue
+        if not started:
+            continue               # drop front-matter before item 1
+        cur.append(re.sub(r"^o\s+", "", s))   # strip "o" sub-bullet marker
+    if cur:
+        items.append(" ".join(cur))
+    return [norm(t) for t in items if len(t.strip()) > 15]
+
+
+def split_item(text):
+    """Split one bank item into [scenario, answer+mechanism] at 'The correct
+    answer is', so the mechanism/Bottom-line is retrievable on its own keywords
+    (not diluted by the vignette). Only splits when both halves are substantial;
+    otherwise the item stays whole. Never produces meaningless fragments."""
+    m = ANSWER_SPLIT.search(text)
+    if m:
+        q, a = text[:m.start()].strip(), text[m.start():].strip()
+        if len(q.split()) >= 8 and len(a.split()) >= 8:
+            return [q, a]
+    return [text]
+
+
 def choose_chunks(lines, doc):
     """Auto-detect the file's item format and chunk accordingly."""
     n_bul = sum(1 for s in lines if s in BULLET)
@@ -179,11 +229,21 @@ def main():
     for pdf in sorted(SRC.glob("*.pdf")):
         stem = pdf.stem
         doc = fitz.open(pdf)
-        items, mode = choose_chunks(clean_lines(doc), doc)
+        if stem in NUMBERED_BANKS_SPLIT:
+            # sequential-gated segmentation + per-item scenario/mechanism split.
+            # Label each facet by its HY item's answer concept (from the whole
+            # item) so both facets cite the same source, not a bare vignette.
+            records, mode = [], "number-split"
+            for item in chunk_numbered_bank(clean_lines(doc)):
+                lbl = label_of(item)
+                for facet in split_item(item):
+                    records.append((lbl, facet))
+        else:
+            items, mode = choose_chunks(clean_lines(doc), doc)
+            records = [(label_of(t), t) for t in items]
         ftags = FILE_TAGS.get(stem, ["mixed"])
         md = [f"# {stem}\n"]
-        for text in items:
-            lbl = label_of(text)
+        for lbl, text in records:
             md.append(f"- **{lbl}** — {text}")
             all_chunks.append({
                 "id": cid, "file": stem, "label": lbl,
@@ -192,7 +252,7 @@ def main():
             })
             cid += 1
         (MD / f"{stem}.md").write_text("\n".join(md))
-        print(f"  {stem:<42} {doc.page_count:>3}p  {len(items):>4} {mode}")
+        print(f"  {stem:<42} {doc.page_count:>3}p  {len(records):>4} {mode}")
     CHUNKS.write_text(json.dumps(all_chunks, ensure_ascii=False))
     print(f"\nTotal: {len(all_chunks)} chunks -> {CHUNKS.relative_to(ROOT)}")
 

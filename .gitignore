@@ -1,11 +1,13 @@
 # ── Licensed NBME content — never commit or push ──────────────────────────
 *.pdf
-import/pages/
-import/images/
-import/out/
+# form-numbered import dirs too (import/pages20, import/images20, import/out20, …)
+import/pages*/
+import/images*/
+import/out*/
 # extracted question bank / SQL are licensed content too
 *.qa.json
 block*.sql
+load_form*.sql
 
 # ── OS / tooling noise ────────────────────────────────────────────────────
 .DS_Store
