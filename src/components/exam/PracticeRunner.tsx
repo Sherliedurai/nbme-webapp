@@ -181,7 +181,9 @@ export default function PracticeRunner({
 
   const finish = useCallback(async () => {
     commitDwell();
-    await completeSession(sessionId).catch(() => {});
+    // Don't swallow a completion failure to nothing — if is_complete never lands
+    // the block won't grey on Home. Surface it, but still finish the UI locally.
+    await completeSession(sessionId).catch((e) => console.error("[nbme] completeSession failed:", e));
     if (persist) await clearBlockProgress(sessionId).catch(() => {});
     setDone(true);
   }, [commitDwell, sessionId, persist]);

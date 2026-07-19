@@ -386,6 +386,40 @@ export function blocksForForm(attempts: AnalyticsAttempt[], form: number): Block
   });
 }
 
+export interface BlockAccRow {
+  block: number;
+  correct: number;
+  total: number;
+  accuracy: number;
+  avgSeconds: number | null;
+  interrupted: boolean;
+}
+
+/**
+ * Per-block accuracy over WHATEVER attempts are passed (assumed already filtered
+ * to one mode by the caller), block order. Unlike blocksForForm this does NOT
+ * split timed vs practice — under the mode-first dashboard the mode is already
+ * chosen, so a single accuracy column per block is correct and never blended.
+ */
+export function blockAccuracy(attempts: AnalyticsAttempt[], form: number): BlockAccRow[] {
+  const byBlock = new Map<number, AnalyticsAttempt[]>();
+  for (const a of attempts) {
+    if (a.nbmeForm !== form) continue;
+    const arr = byBlock.get(a.blockNumber);
+    if (arr) arr.push(a); else byBlock.set(a.blockNumber, [a]);
+  }
+  return [...byBlock.entries()].sort((x, y) => x[0] - y[0]).map(([block, rows]) => {
+    let correct = 0, total = 0;
+    for (const a of rows) { total++; if (a.finalLetter != null && a.finalLetter === a.correctLetter) correct++; }
+    const secs = rows.map((a) => a.secondsSpent).filter((s): s is number => s != null);
+    return {
+      block, correct, total, accuracy: total ? correct / total : 0,
+      avgSeconds: secs.length ? Math.round(secs.reduce((x, y) => x + y, 0) / secs.length) : null,
+      interrupted: rows.some((a) => a.paused),
+    };
+  });
+}
+
 export interface QDrillRow {
   questionId: string;
   qNumber: number;

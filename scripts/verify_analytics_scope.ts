@@ -118,5 +118,37 @@ check("Excluding NBME 31 drops its trend column", JSON.stringify(tagTrendByForm(
 check("Excluded form still has its OWN per-form data intact (scoping INTO it is unfiltered)", all.filter((a) => a.nbmeForm === 31).length === 40);
 check("Exclusion is form-agnostic — excluding NBME 20 instead flips which survives", JSON.stringify(tagTrendByForm(all.filter((a) => !new Set([20]).has(a.nbmeForm)), (a) => a.discipline).forms) === JSON.stringify([31]));
 
+// ── MODE is the outermost frame: filter by mode, THEN form/block ────────────────
+console.log("\n=== mode-first hierarchy (mode → form → block, each discrete) ===");
+type ModeFilter = "all" | "practice" | "timed" | "exam";
+// EXACT replica of the component's inMode predicate.
+const inMode = (m: ModeFilter) => (a: AnalyticsAttempt): boolean => {
+  switch (m) {
+    case "timed": return a.mode === "block";
+    case "exam": return a.mode === "full_exam";
+    case "practice": return a.mode === "practice" || a.mode === "custom";
+    default: return true;
+  }
+};
+const modeBase = (m: ModeFilter) => all.filter(inMode(m));
+// Preview modes: NBME 31 both blocks full_exam; NBME 20 B1 'block' (timed), B2 'practice'.
+check("Mode 'all' = every attempt (80)", modeBase("all").length === 80);
+check("Mode 'exam' = full_exam only → NBME 31, 40 attempts", modeBase("exam").length === 40 && modeBase("exam").every((a) => a.nbmeForm === 31));
+check("Mode 'timed' = block only → NBME 20 Block 1, 20 attempts", modeBase("timed").length === 20 && modeBase("timed").every((a) => a.nbmeForm === 20 && a.blockNumber === 1));
+check("Mode 'practice' = practice/custom → NBME 20 Block 2, 20 attempts", modeBase("practice").length === 20 && modeBase("practice").every((a) => a.nbmeForm === 20 && a.blockNumber === 2));
+check("Modes partition the data (timed + practice + exam = all)", modeBase("timed").length + modeBase("practice").length + modeBase("exam").length === modeBase("all").length);
+
+// scoresByForm respects the mode frame — 'exam' shows only NBME 31 as a form card
+check("scoresByForm within 'exam' lists only NBME 31", JSON.stringify(scoresByForm(modeBase("exam")).map((f) => f.form)) === JSON.stringify([31]));
+check("scoresByForm within 'practice' lists only NBME 20", JSON.stringify(scoresByForm(modeBase("practice")).map((f) => f.form)) === JSON.stringify([20]));
+
+// mode → form → block composes: timed base, scoped to NBME 20 Block 1, is that block
+const timedB1 = modeBase("timed").filter((a) => a.nbmeForm === 20 && a.blockNumber === 1);
+check("Mode+form+block compose (timed · NBME 20 · Block 1 = 20 rows)", timedB1.length === 20);
+check("Selecting the OTHER block under 'timed' is empty (B2 is practice, not timed)", modeBase("timed").filter((a) => a.blockNumber === 2).length === 0);
+
+// trend respects the mode frame — 'exam' trend has only NBME 31's column
+check("Trend within 'exam' has a single form column [31]", JSON.stringify(tagTrendByForm(modeBase("exam"), (a) => a.discipline).forms) === JSON.stringify([31]));
+
 console.log(`\n${fails === 0 ? "ALL CHECKS PASSED ✓" : `${fails} CHECK(S) FAILED ✗`}\n`);
 process.exit(fails === 0 ? 0 : 1);

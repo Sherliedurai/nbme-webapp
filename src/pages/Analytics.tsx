@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAttemptsWithQuestions, getReviewQueue } from "@/lib/queries";
@@ -6,6 +6,7 @@ import {
   ERROR_TAGS,
   ERROR_TAG_META,
   accuracyByTag,
+  blockAccuracy,
   blocksForForm,
   canonicalizeAttempts,
   errorTypeDistribution,
@@ -26,13 +27,26 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, ArrowLeft, ChevronRight, Download, FileText, FolderTree, Gauge, Layers, LineChart, ListChecks, Repeat, Tags, TrendingDown } from "lucide-react";
+import { AlertTriangle, ArrowLeft, BookOpen, ChevronRight, Download, FileText, FolderTree, Gauge, Layers, LineChart, ListChecks, Repeat, SlidersHorizontal, Tags, Timer, TrendingDown } from "lucide-react";
+
+// Mode is the OUTERMOST frame of the dashboard: practice measures learning
+// accuracy; timed/exam measure performance under pressure. Kept discrete.
+type ModeFilter = "all" | "practice" | "timed" | "exam";
+const MODE_TABS: { id: ModeFilter; label: string; icon: typeof BookOpen; blurb: string }[] = [
+  { id: "all", label: "All modes", icon: Layers, blurb: "Every sitting pooled." },
+  { id: "practice", label: "Practice", icon: BookOpen, blurb: "Untimed — learning accuracy." },
+  { id: "timed", label: "Timed blocks", icon: Timer, blurb: "30:00 single blocks — under pressure." },
+  { id: "exam", label: "Full exam", icon: SlidersHorizontal, blurb: "Whole-form sittings — stamina." },
+];
 
 export default function Analytics() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [attempts, setAttempts] = useState<AnalyticsAttempt[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // MODE is the outermost frame (see MODE_TABS): practice measures learning
+  // accuracy, timed/exam measure performance under pressure — blending hides signal.
+  const [modeFilter, setModeFilter] = useState<ModeFilter>("all");
   // null = all forms; otherwise scope the whole dashboard to one form.
   const [formFilter, setFormFilter] = useState<number | null>(null);
   const [drillBlock, setDrillBlock] = useState<number | null>(null); // block within the selected form
@@ -61,41 +75,67 @@ export default function Analytics() {
   // Changing the form resets the block drill.
   useEffect(() => { setDrillBlock(null); }, [formFilter]);
 
-  // Level 4/3 drill — blocks within the selected form, questions within a block.
-  const drillBlocks = useMemo(
-    () => (attempts && formFilter != null ? blocksForForm(attempts, formFilter) : []),
-    [attempts, formFilter]
-  );
-  const drillQuestions = useMemo(
-    () => (attempts && formFilter != null && drillBlock != null ? questionsForBlock(attempts, formFilter, drillBlock) : []),
-    [attempts, formFilter, drillBlock]
-  );
+  // ── MODE is the outermost filter — everything below reads a mode-filtered base ──
+  const inMode = useCallback((a: AnalyticsAttempt): boolean => {
+    switch (modeFilter) {
+      case "timed": return a.mode === "block";
+      case "exam": return a.mode === "full_exam";
+      case "practice": return a.mode === "practice" || a.mode === "custom";
+      default: return true; // "all"
+    }
+  }, [modeFilter]);
+  const modeBase = useMemo(() => (attempts ? attempts.filter(inMode) : null), [attempts, inMode]);
 
-  // Per-form scores are computed over ALL attempts (the whole point is not to pool).
-  const formScores = useMemo(() => (attempts ? scoresByForm(attempts) : []), [attempts]);
+  // Per-form scores — WITHIN the selected mode. Every form is still listed as a card
+  // (exclusion only affects the aggregate/trend, not whether a form appears).
+  const formScores = useMemo(() => (modeBase ? scoresByForm(modeBase) : []), [modeBase]);
 
-  // The breadcrumb scopes the ENTIRE page. `scoped` is the single source of truth
-  // every per-scope section reads from — narrowed by BOTH the selected form and the
-  // selected block, discretely (all forms → one form → one block). Never blended.
+  // The breadcrumb scopes the page WITHIN the selected mode. `scoped` is the single
+  // source of truth every per-scope section reads — narrowed by mode, then form, then
+  // block, discretely (never blended). All-forms drops excluded ("already seen") forms.
   const scoped = useMemo(() => {
+    if (!modeBase) return null;
+    let rows = formFilter == null ? modeBase.filter((a) => !excludedForms.has(a.nbmeForm)) : modeBase.filter((a) => a.nbmeForm === formFilter);
+    if (formFilter != null && drillBlock != null) rows = rows.filter((a) => a.blockNumber === drillBlock);
+    return rows;
+  }, [modeBase, formFilter, drillBlock, excludedForms]);
+
+  // Cross-mode scope for the practice-vs-exam view ONLY — that comparison inherently
+  // needs BOTH modes, so it ignores the mode toggle (still respects form/block + exclusion).
+  const crossModeScoped = useMemo(() => {
     if (!attempts) return null;
-    // All-forms scope drops excluded ("already seen") forms so the pooled numbers
-    // reflect only forms that count. Scoping INTO an excluded form still shows it in
-    // full — the exclusion is about aggregation, not hiding.
     let rows = formFilter == null ? attempts.filter((a) => !excludedForms.has(a.nbmeForm)) : attempts.filter((a) => a.nbmeForm === formFilter);
     if (formFilter != null && drillBlock != null) rows = rows.filter((a) => a.blockNumber === drillBlock);
     return rows;
   }, [attempts, formFilter, drillBlock, excludedForms]);
 
+  // Level 4/3 drill — blocks within the form, questions within a block; both respect
+  // the mode toggle. "All modes" keeps the timed-vs-practice split (unblended);
+  // a specific mode collapses to one accuracy column (already one mode).
+  const drillBlocksSplit = useMemo(
+    () => (attempts && formFilter != null ? blocksForForm(attempts, formFilter) : []),
+    [attempts, formFilter]
+  );
+  const drillBlocksMode = useMemo(
+    () => (modeBase && formFilter != null ? blockAccuracy(modeBase, formFilter) : []),
+    [modeBase, formFilter]
+  );
+  const drillQuestions = useMemo(
+    () => (modeBase && formFilter != null && drillBlock != null ? questionsForBlock(modeBase, formFilter, drillBlock) : []),
+    [modeBase, formFilter, drillBlock]
+  );
+
   // Human label for the active scope, shown on every scoped section header.
   // Derived purely from the selection — no form is ever named in code.
-  const scopeLabel = formFilter == null
+  const modeLabel = MODE_TABS.find((t) => t.id === modeFilter)!.label;
+  const formPart = formFilter == null
     ? excludedForms.size > 0
       ? `All counted forms (excl. ${[...excludedForms].sort((a, b) => a - b).map((f) => `NBME ${f}`).join(", ")})`
       : "All forms"
     : drillBlock == null
       ? `NBME ${formFilter}`
       : `NBME ${formFilter} · Block ${drillBlock}`;
+  const scopeLabel = `${modeLabel} · ${formPart}`;
   const atBlock = formFilter != null && drillBlock != null;
 
   const fi = useMemo(() => (scoped ? firstInstinct(scoped) : null), [scoped]);
@@ -104,18 +144,24 @@ export default function Analytics() {
     [scoped]
   );
   const pacing = useMemo(() => (scoped ? pacingByPosition(scoped) : []), [scoped]);
-  const stamina = useMemo(() => (scoped ? staminaByBlock(scoped, true) : []), [scoped]);
+  // Stamina is a full-exam concept; when a single timed/practice mode is selected the
+  // base is already that mode, so don't re-restrict to full_exam (it'd go empty).
+  const stamina = useMemo(
+    () => (scoped ? staminaByBlock(scoped, modeFilter === "all" || modeFilter === "exam") : []),
+    [scoped, modeFilter]
+  );
 
   // Strong & weak by tag (scoped to the selected form), three cuts, worst-first.
   const swDiscipline = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.discipline) : []), [scoped]);
   const swSystem = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.system) : []), [scoped]);
   const swType = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.questionType) : []), [scoped]);
 
-  // Practice-vs-exam split (scoped to the selection): a big gap = pressure/retrieval, not content.
+  // Practice-vs-exam split — the pressure-gap view. Reads the CROSS-mode scope (it
+  // compares modes, so it ignores the mode toggle) but still respects form/block.
   const modeSplit = useMemo(() => {
-    if (!scoped) return null;
+    if (!crossModeScoped) return null;
     const cut = (pred: (a: AnalyticsAttempt) => boolean) => {
-      const pool = scoped.filter(pred);
+      const pool = crossModeScoped.filter(pred);
       const answered = pool.filter((a) => a.finalLetter != null);
       const correct = answered.filter((a) => a.finalLetter === a.correctLetter).length;
       return { total: answered.length, correct, accuracy: answered.length ? correct / answered.length : 0 };
@@ -124,13 +170,13 @@ export default function Analytics() {
       practice: cut((a) => a.mode === "practice" || a.mode === "custom"),
       exam: cut((a) => a.mode === "block" || a.mode === "full_exam"),
     };
-  }, [scoped]);
+  }, [crossModeScoped]);
 
-  // Cross-form trend — over counted forms only. An excluded ("already seen") form
-  // would add a misleading column, so it drops out of the trend just like the aggregate.
+  // Cross-form trend — within the selected mode, over counted forms only. An excluded
+  // ("already seen") form would add a misleading column, so it drops out like the aggregate.
   const trend = useMemo(
-    () => (attempts ? tagTrendByForm(attempts.filter((a) => !excludedForms.has(a.nbmeForm)), (a) => a.discipline) : null),
-    [attempts, excludedForms]
+    () => (modeBase ? tagTrendByForm(modeBase.filter((a) => !excludedForms.has(a.nbmeForm)), (a) => a.discipline) : null),
+    [modeBase, excludedForms]
   );
 
   // Wrong-answer filter — every question currently gotten wrong WITHIN the active scope.
@@ -224,11 +270,42 @@ export default function Analytics() {
           </CardContent></Card>
         )}
 
+        {/* ── MODE — the outermost frame. Filters EVERY section below. ──────── */}
+        {attempts && attempts.length > 0 && (
+          <section>
+            <SectionHead icon={FolderTree} title="Mode" scope={modeLabel}
+              sub="Practice measures learning accuracy; timed and full-exam measure performance under pressure. They're kept separate — blending them hides the signal. Pick a mode, then drill: form → block." />
+            <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+              {MODE_TABS.map((t) => {
+                const n = attempts.filter((a) =>
+                  t.id === "all" ? true : t.id === "timed" ? a.mode === "block" : t.id === "exam" ? a.mode === "full_exam" : a.mode === "practice" || a.mode === "custom"
+                ).length;
+                const on = modeFilter === t.id;
+                return (
+                  <button key={t.id} onClick={() => setModeFilter(t.id)}
+                    className={cn("flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors",
+                      on ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent")}>
+                    <t.icon className={cn("size-5", on ? "text-primary" : "text-slate-500")} />
+                    <div className="font-semibold text-slate-800">{t.label}</div>
+                    <div className="text-xs text-muted-foreground">{t.blurb}</div>
+                    <div className="text-[11px] font-medium tabular-nums text-muted-foreground">{n} attempt{n === 1 ? "" : "s"}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {modeBase && modeBase.length === 0 && (
+              <p className="mt-3 rounded-md bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
+                No <strong>{modeLabel}</strong> attempts yet. Every section below is empty for this mode — switch modes above, or sit a {modeLabel.toLowerCase()} block.
+              </p>
+            )}
+          </section>
+        )}
+
         {/* ── 0. Scores by form (never pooled) + form filter ───────────────── */}
         {attempts && attempts.length > 0 && formScores.length > 0 && (
           <section>
-            <SectionHead icon={FileText} title="Scores by form" scope="All forms · comparison"
-              sub="Each form scored on its own — a pooled average across forms doesn't predict a pass. Tap a form to scope the page." />
+            <SectionHead icon={FileText} title="Scores by form" scope={`${modeLabel} · comparison`}
+              sub="Each form scored on its own (within the selected mode) — a pooled average across forms doesn't predict a pass. Tap a form to scope the page." />
             <div className="grid gap-3 sm:grid-cols-3">
               {formScores.map((f) => {
                 const w = Math.round(f.accuracy * 100);
@@ -286,9 +363,11 @@ export default function Analytics() {
         {/* ── Drill: form → block → question (each level discrete) ─────────── */}
         {attempts && attempts.length > 0 && (
           <section>
-            <SectionHead icon={FolderTree} title="Drill down — form → block → question"
-              sub="This breadcrumb scopes the whole page below it. Every level stays separate — never collapsed into one blended number." />
+            <SectionHead icon={FolderTree} title="Drill down — mode → form → block → question" scope={modeLabel}
+              sub="The mode above and this breadcrumb together scope the whole page. Every level stays separate — never collapsed into one blended number." />
             <div className="mb-3 flex flex-wrap items-center gap-1.5 text-sm">
+              <span className="rounded bg-primary/10 px-2 py-1 font-semibold text-primary">{modeLabel}</span>
+              <span className="text-slate-400">›</span>
               <button onClick={() => setFormFilter(null)} className={cn("rounded px-2 py-1", formFilter == null ? "font-semibold text-slate-800" : "text-primary hover:underline")}>All forms</button>
               {formFilter != null && (<>
                 <span className="text-slate-400">›</span>
@@ -305,34 +384,66 @@ export default function Analytics() {
                 Pick a form in <strong>Scores by form</strong> above to drill into its blocks, then a block, then a question.
               </CardContent></Card>
             ) : drillBlock == null ? (
-              drillBlocks.length === 0 ? (
-                <Card><CardContent className="p-6 text-sm text-muted-foreground">No attempts on NBME {formFilter} yet.</CardContent></Card>
+              modeFilter === "all" ? (
+                // All modes → keep the timed-vs-practice split (unblended, side by side).
+                drillBlocksSplit.length === 0 ? (
+                  <Card><CardContent className="p-6 text-sm text-muted-foreground">No attempts on NBME {formFilter} yet.</CardContent></Card>
+                ) : (
+                  <Card><CardContent className="p-0">
+                    <div className="overflow-x-auto"><table className="w-full text-sm">
+                      <thead><tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-4 py-2 font-medium">Block</th>
+                        <th className="px-4 py-2 font-medium">Timed</th>
+                        <th className="px-4 py-2 font-medium">Practice</th>
+                        <th className="px-4 py-2 font-medium">Avg time (timed)</th>
+                        <th className="px-4 py-2"></th>
+                      </tr></thead>
+                      <tbody>
+                        {drillBlocksSplit.map((b) => (
+                          <tr key={b.block} className="cursor-pointer border-t hover:bg-accent" onClick={() => setDrillBlock(b.block)}>
+                            <td className="px-4 py-2.5 font-medium text-slate-800">
+                              Block {b.block}
+                              {b.interrupted && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">interrupted</span>}
+                            </td>
+                            <td className="px-4 py-2.5 tabular-nums">{acc(b.timed)}</td>
+                            <td className="px-4 py-2.5 tabular-nums">{acc(b.practice)}</td>
+                            <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{b.avgTimedSeconds != null ? `${b.avgTimedSeconds}s/q` : "—"}</td>
+                            <td className="px-4 py-2.5 text-right"><ChevronRight className="inline size-4 text-slate-400" /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table></div>
+                  </CardContent></Card>
+                )
               ) : (
-                <Card><CardContent className="p-0">
-                  <div className="overflow-x-auto"><table className="w-full text-sm">
-                    <thead><tr className="border-b text-left text-xs text-muted-foreground">
-                      <th className="px-4 py-2 font-medium">Block</th>
-                      <th className="px-4 py-2 font-medium">Timed</th>
-                      <th className="px-4 py-2 font-medium">Practice</th>
-                      <th className="px-4 py-2 font-medium">Avg time (timed)</th>
-                      <th className="px-4 py-2"></th>
-                    </tr></thead>
-                    <tbody>
-                      {drillBlocks.map((b) => (
-                        <tr key={b.block} className="cursor-pointer border-t hover:bg-accent" onClick={() => setDrillBlock(b.block)}>
-                          <td className="px-4 py-2.5 font-medium text-slate-800">
-                            Block {b.block}
-                            {b.interrupted && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">interrupted</span>}
-                          </td>
-                          <td className="px-4 py-2.5 tabular-nums">{acc(b.timed)}</td>
-                          <td className="px-4 py-2.5 tabular-nums">{acc(b.practice)}</td>
-                          <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{b.avgTimedSeconds != null ? `${b.avgTimedSeconds}s/q` : "—"}</td>
-                          <td className="px-4 py-2.5 text-right"><ChevronRight className="inline size-4 text-slate-400" /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table></div>
-                </CardContent></Card>
+                // A specific mode → one accuracy column for that mode.
+                drillBlocksMode.length === 0 ? (
+                  <Card><CardContent className="p-6 text-sm text-muted-foreground">No {modeLabel.toLowerCase()} attempts on NBME {formFilter} yet.</CardContent></Card>
+                ) : (
+                  <Card><CardContent className="p-0">
+                    <div className="overflow-x-auto"><table className="w-full text-sm">
+                      <thead><tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-4 py-2 font-medium">Block</th>
+                        <th className="px-4 py-2 font-medium">{modeLabel} accuracy</th>
+                        <th className="px-4 py-2 font-medium">Avg time</th>
+                        <th className="px-4 py-2"></th>
+                      </tr></thead>
+                      <tbody>
+                        {drillBlocksMode.map((b) => (
+                          <tr key={b.block} className="cursor-pointer border-t hover:bg-accent" onClick={() => setDrillBlock(b.block)}>
+                            <td className="px-4 py-2.5 font-medium text-slate-800">
+                              Block {b.block}
+                              {b.interrupted && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">interrupted</span>}
+                            </td>
+                            <td className="px-4 py-2.5 tabular-nums">{b.total ? `${Math.round(b.accuracy * 100)}% · ${b.correct}/${b.total}` : "—"}</td>
+                            <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{b.avgSeconds != null ? `${b.avgSeconds}s/q` : "—"}</td>
+                            <td className="px-4 py-2.5 text-right"><ChevronRight className="inline size-4 text-slate-400" /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table></div>
+                  </CardContent></Card>
+                )
               )
             ) : (
               <Card><CardContent className="p-0">
@@ -507,8 +618,9 @@ export default function Analytics() {
 
             {/* ── 4. Stamina ────────────────────────────────────────────────── */}
             <section>
-              <SectionHead icon={TrendingDown} title="Stamina — accuracy by block (full exams)" scope={scopeLabel}
-                sub="A steady decline across blocks is fatigue, not content." />
+              <SectionHead icon={TrendingDown}
+                title={`Stamina — accuracy by block${modeFilter === "all" || modeFilter === "exam" ? " (full exams)" : ""}`}
+                scope={scopeLabel} sub="A steady decline across blocks is fatigue, not content." />
               {atBlock ? (
                 <Card><CardContent className="p-6 text-sm text-muted-foreground">
                   Stamina compares blocks against each other, so it doesn't apply to a single block. Clear the block in the
@@ -516,7 +628,9 @@ export default function Analytics() {
                 </CardContent></Card>
               ) : stamina.length === 0 ? (
                 <Card><CardContent className="p-6 text-sm text-muted-foreground">
-                  No full-exam sittings yet. Run a full exam and block-to-block stamina shows here.
+                  {modeFilter === "all" || modeFilter === "exam"
+                    ? "No full-exam sittings yet. Run a full exam and block-to-block stamina shows here."
+                    : `No ${modeLabel.toLowerCase()} sittings across multiple blocks yet.`}
                 </CardContent></Card>
               ) : (
                 <AccuracyBars buckets={stamina} />
@@ -526,8 +640,8 @@ export default function Analytics() {
             {/* ── 5. Cross-form trend (all forms) ───────────────────────────── */}
             {trend && trend.rows.length > 0 && (
               <section>
-                <SectionHead icon={LineChart} title="Trend by discipline — across forms" scope="All forms · comparison"
-                  sub="Is the gap actually closing? Accuracy per discipline, one column per form. Weakest first." />
+                <SectionHead icon={LineChart} title="Trend by discipline — across forms" scope={`${modeLabel} · comparison`}
+                  sub="Is the gap actually closing? Accuracy per discipline (within the selected mode), one column per form. Weakest first." />
                 {trend.forms.length < 2 && (
                   <p className="mb-3 text-xs text-muted-foreground">
                     Only one form so far — the trend fills in as you sit NBME {trend.forms.join(", ")} and the next forms.

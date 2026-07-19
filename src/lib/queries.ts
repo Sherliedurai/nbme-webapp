@@ -258,7 +258,14 @@ export async function getCompletedBlock(
 export async function getCompletedBlocks(
   userId: string
 ): Promise<{ mode: SessionMode; form: number | null; block: number | null }[]> {
-  if (PREVIEW) return [];
+  if (PREVIEW)
+    // Exercises Home greying without Supabase: NBME 20 B1 sat timed + B2 as practice
+    // (form 20 fully covered across modes); NBME 31 sat as a full exam (both blocks).
+    return [
+      { mode: "block", form: 20, block: 1 },
+      { mode: "practice", form: 20, block: 2 },
+      { mode: "full_exam", form: 31, block: null },
+    ];
   const { data, error } = await supabase
     .from("block_sessions")
     .select("mode, nbme_form, block_number")
@@ -393,11 +400,18 @@ export async function submitBlock(
     for (const r of (data ?? []) as { id: string; question_id: string }[]) map.set(r.question_id, r.id);
   }
 
-  const { error: sessionError } = await supabase
+  // Assert the completion write actually landed. A bare update reports success on
+  // 0 rows (wrong id, or RLS silently filtering) — the same silent 0-row write that
+  // has bitten this project. If is_complete never lands, the block never greys and
+  // re-entry keeps "resuming". Returning-zero now throws so the caller can retry.
+  const { data: sess, error: sessionError } = await supabase
     .from("block_sessions")
     .update({ submitted_at: new Date().toISOString(), is_complete: true, paused_at: null })
-    .eq("id", sessionId);
+    .eq("id", sessionId)
+    .select("id");
   if (sessionError) throw sessionError;
+  if (!sess || sess.length !== 1)
+    throw new Error(`submitBlock: session ${sessionId} not marked complete (affected ${sess?.length ?? 0} rows). Answers are saved — retry.`);
 
   // The block is finalized in `attempts` now — clear the in-progress scratch.
   const { error: progressError } = await supabase.from("block_progress").delete().eq("block_session_id", sessionId);
@@ -450,14 +464,21 @@ export async function updateAttemptErrorTag(attemptId: string, tag: ErrorTag | n
   }
 }
 
-/** Mark a session submitted/complete (practice finishes without a batch submit). */
+/**
+ * Mark a session submitted/complete (practice finishes without a batch submit).
+ * Asserts the update touched exactly one row — a silent 0-row update would leave
+ * is_complete=false, so the block would never grey and would keep "resuming".
+ */
 export async function completeSession(sessionId: string): Promise<void> {
   if (PREVIEW) return;
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("block_sessions")
     .update({ submitted_at: new Date().toISOString(), is_complete: true })
-    .eq("id", sessionId);
+    .eq("id", sessionId)
+    .select("id");
   if (error) throw error;
+  if (!data || data.length !== 1)
+    throw new Error(`completeSession: session ${sessionId} not marked complete (affected ${data?.length ?? 0} rows).`);
 }
 
 /**

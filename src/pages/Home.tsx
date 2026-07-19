@@ -71,6 +71,21 @@ export default function Home() {
     return m;
   }, [attempts, selected]);
 
+  // Per-form progress for the form-selection cards: DISTINCT blocks finished in ANY
+  // mode (a full_exam covers every block of its form). Derived from DB is_complete.
+  const formProgress = useMemo(() => {
+    const m = new Map<number, Set<number>>();
+    for (const c of completed) {
+      if (c.form == null) continue;
+      const bc = forms?.find((f) => f.form === c.form)?.blockCount ?? 0;
+      let set = m.get(c.form);
+      if (!set) { set = new Set(); m.set(c.form, set); }
+      if (c.mode === "full_exam") { for (let b = 1; b <= bc; b++) set.add(b); }
+      else if (c.block != null) set.add(c.block);
+    }
+    return m;
+  }, [completed, forms]);
+
   return (
     <div className="min-h-screen bg-background">
       <header className="flex items-center justify-between bg-navy px-6 py-3 text-navy-foreground">
@@ -123,20 +138,40 @@ export default function Home() {
         )}
 
         <div className="grid gap-3 sm:grid-cols-3">
-          {(forms ?? []).map((f) => (
-            <button
-              key={f.form}
-              onClick={() => setForm(f.form)}
-              className={cn(
-                "flex flex-col items-start gap-1.5 rounded-lg border p-4 text-left transition-colors",
-                form === f.form ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent"
-              )}
-            >
-              <FileText className={cn("size-5", form === f.form ? "text-primary" : "text-slate-500")} />
-              <div className="font-semibold text-slate-800">NBME {f.form}</div>
-              <div className="text-xs text-muted-foreground">{f.blockCount} block{f.blockCount === 1 ? "" : "s"} · {f.questionCount} Q</div>
-            </button>
-          ))}
+          {(forms ?? []).map((f) => {
+            const done = formProgress.get(f.form)?.size ?? 0;
+            const allDone = done > 0 && done >= f.blockCount;
+            const pct = f.blockCount ? Math.round((done / f.blockCount) * 100) : 0;
+            return (
+              <button
+                key={f.form}
+                onClick={() => setForm(f.form)}
+                className={cn(
+                  "flex flex-col items-start gap-1.5 rounded-lg border p-4 text-left transition-colors",
+                  form === f.form ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent",
+                  allDone && form !== f.form && "bg-muted/40"
+                )}
+              >
+                <div className="flex w-full items-start justify-between">
+                  <FileText className={cn("size-5", form === f.form ? "text-primary" : "text-slate-500")} />
+                  {allDone && <CheckCircle2 className="size-5 text-correct" />}
+                </div>
+                <div className="font-semibold text-slate-800">NBME {f.form}</div>
+                <div className="text-xs text-muted-foreground">{f.blockCount} block{f.blockCount === 1 ? "" : "s"} · {f.questionCount} Q</div>
+                {done > 0 && (
+                  <div className="mt-1 w-full">
+                    <div className="flex items-center justify-between text-[11px] font-medium text-slate-600">
+                      <span>{allDone ? "Complete" : "In progress"}</span>
+                      <span className="tabular-nums">{done}/{f.blockCount} blocks done</span>
+                    </div>
+                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div className={cn("h-full rounded-full", allDone ? "bg-correct" : "bg-primary")} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* ── Step 2: pick a mode (only after a form is chosen) ────────────── */}
