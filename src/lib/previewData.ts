@@ -4,6 +4,50 @@
 // special-cased: add a third form to `previewAnalyticsAttempts` and it appears
 // automatically everywhere the dashboard derives its form list from the data.
 import type { AnalyticsAttempt } from "./analytics";
+import type { EnrichedExplanation, ExamQuestion, FullQuestion } from "./types";
+
+const OPT_LETTERS = ["A", "B", "C", "D", "E"];
+const previewCorrect = (qn: number) => OPT_LETTERS[(qn * 3) % 5];
+
+/** Synthetic, non-licensed questions so the exam/practice runners are drivable
+ *  under VITE_PREVIEW without Supabase (the anon role can't read `questions`). */
+export function previewQuestions(form: number, blockNumber: number): FullQuestion[] {
+  return Array.from({ length: 20 }, (_, i) => {
+    const qn = (blockNumber - 1) * 20 + i + 1;
+    const correct = previewCorrect(qn);
+    const enriched: EnrichedExplanation = {
+      answer_lock: `**Preview mechanism** for Q${qn}: why **${correct}** is correct.`,
+      hook: `Preview recall hook for Q${qn}.`,
+      knockdowns: OPT_LETTERS.filter((l) => l !== correct).map((l) => ({ option: `${l}. Preview option ${l}`, reason: `Why **${l}** doesn't fit (preview).` })),
+      high_yield: [{ fact: `**Preview** high-yield fact for Q${qn}.`, source: "model" }],
+      how_they_test: [{ scenario: `Preview alt scenario ${qn}`, answer: `Preview answer`, source: "model" }],
+    };
+    return {
+      id: `preview-q-${form}-${blockNumber}-${qn}`,
+      nbme_form: form, block_number: blockNumber, q_number: qn,
+      vignette_text: `Preview vignette ${qn} (block ${blockNumber}). A 40-year-old presents with a classic finding; which of the following is most likely?`,
+      options: OPT_LETTERS.map((l) => ({ letter: l, text: `Preview option ${l} for Q${qn}` })),
+      clinical_image_url: null,
+      system_tag: "Cardiovascular", discipline_tag: "Physiology", question_type: "mechanism",
+      correct_letter: correct, source_explanation: `Preview source explanation for Q${qn}.`, enriched_explanation: enriched,
+    };
+  });
+}
+
+/** Exam-safe projection (no answer key), matching getExamQuestions. */
+export function previewExamQuestions(form: number, blockNumber: number): ExamQuestion[] {
+  return previewQuestions(form, blockNumber).map(({ correct_letter, source_explanation, enriched_explanation, ...rest }) => rest);
+}
+
+/** Answer key for a set of preview question ids (id = preview-q-form-block-qn). */
+export function previewAnswerKey(questionIds: string[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const id of questionIds) {
+    const qn = Number(id.split("-").pop());
+    if (Number.isFinite(qn)) m.set(id, previewCorrect(qn));
+  }
+  return m;
+}
 
 const LETTERS = ["A", "B", "C", "D", "E"];
 const DISCIPLINES = ["Physiology", "Pathology", "Pharmacology", "Biochemistry", "Behavioral Sciences"];

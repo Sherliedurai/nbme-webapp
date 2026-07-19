@@ -51,9 +51,35 @@ export default function SubmitReviewModal({
             </span>
           </div>
 
-          <p className="mb-3 text-xs text-muted-foreground">
-            Tap a question to jump back. Unanswered are outlined; flagged carry a marker.
-          </p>
+          {/* Explicit jump-lists — the two things worth acting on before submit. */}
+          {unanswered > 0 && (
+            <div className="mb-3">
+              <div className="mb-1.5 text-xs font-semibold text-slate-600">Unanswered — jump to:</div>
+              <div className="flex flex-wrap gap-1.5">
+                {cells.map((c, i) => !c.answered && (
+                  <button key={i} onClick={() => onJump(i)}
+                    className="grid h-8 min-w-8 place-items-center rounded-md border border-dashed border-slate-400 bg-card px-2 text-sm font-medium text-slate-600 hover:bg-accent">
+                    {i + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {flagged > 0 && (
+            <div className="mb-3">
+              <div className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-flagged"><Flag className="size-3 fill-flagged" /> Flagged — jump to:</div>
+              <div className="flex flex-wrap gap-1.5">
+                {cells.map((c, i) => c.flagged && (
+                  <button key={i} onClick={() => onJump(i)}
+                    className="grid h-8 min-w-8 place-items-center rounded-md border border-flagged/40 bg-flagged-soft px-2 text-sm font-medium text-flagged hover:bg-flagged/20">
+                    {i + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <p className="mb-2 mt-4 text-xs text-muted-foreground">All questions — tap any to jump back:</p>
           <div className="grid grid-cols-5 gap-2 sm:grid-cols-10">
             {cells.map((c, i) => (
               <button

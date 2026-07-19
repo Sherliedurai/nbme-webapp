@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { cn, formatClock } from "@/lib/utils";
-import { Clock } from "lucide-react";
+import { Clock, Flag } from "lucide-react";
 
 interface Props {
   blockNumber: number;
@@ -8,6 +8,7 @@ interface Props {
   currentIndex: number;
   total: number;
   answeredCount: number;
+  flaggedCount?: number;
   secondsRemaining: number;
   onEndBlock: () => void;
   onEndExam: () => void;
@@ -19,6 +20,7 @@ export default function ExamTopBar({
   currentIndex,
   total,
   answeredCount,
+  flaggedCount = 0,
   secondsRemaining,
   onEndBlock,
   onEndExam,
@@ -51,8 +53,15 @@ export default function ExamTopBar({
         <span className="rounded-md bg-white/10 px-2.5 py-1 text-xs tabular-nums" title="Questions answered (correctness hidden until submit)">
           Answered {answeredCount}/{total}
         </span>
+        {flaggedCount > 0 && (
+          <button onClick={onEndBlock}
+            className="inline-flex items-center gap-1 rounded-md bg-flagged-soft px-2.5 py-1 text-xs font-medium tabular-nums text-flagged hover:opacity-90"
+            title="Flagged for review — click to review & submit">
+            <Flag className="size-3.5 fill-flagged" /> {flaggedCount} flagged
+          </button>
+        )}
         <Button variant="secondary" size="sm" onClick={onEndBlock}>
-          End Block
+          Review &amp; End Block
         </Button>
         <Button variant="destructive" size="sm" onClick={onEndExam}>
           End Exam

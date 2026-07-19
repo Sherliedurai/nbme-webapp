@@ -2,7 +2,7 @@ import { supabase } from "./supabase";
 import { PREVIEW } from "./preview";
 import type { AnswerKeyRow, BlockProgressRow, BlockSession, ExamQuestion, FullQuestion, ReviewAnswer, SessionMode } from "./types";
 import type { AnalyticsAttempt, ErrorTag } from "./analytics";
-import { previewAnalyticsAttempts } from "./previewData";
+import { previewAnalyticsAttempts, previewAnswerKey, previewExamQuestions, previewQuestions } from "./previewData";
 
 const EXAM_COLUMNS =
   "id, nbme_form, block_number, q_number, vignette_text, options, clinical_image_url, system_tag, discipline_tag, question_type";
@@ -20,6 +20,7 @@ export interface FormSummary {
  * (block_number is per-form, so blockCount = the form's largest block.)
  */
 export async function getForms(): Promise<FormSummary[]> {
+  if (PREVIEW) return [{ form: 20, blockCount: 2, questionCount: 40 }, { form: 31, blockCount: 2, questionCount: 40 }];
   const { data, error } = await supabase.from("questions").select("nbme_form, block_number");
   if (error) throw error;
   const byForm = new Map<number, { blockCount: number; questionCount: number }>();
@@ -39,6 +40,7 @@ export async function getForms(): Promise<FormSummary[]> {
  * Used by Practice (immediate reveal) and Review — NOT during a live block/exam.
  */
 export async function getFullQuestions(form: number, blockNumber: number): Promise<FullQuestion[]> {
+  if (PREVIEW) return previewQuestions(form, blockNumber);
   const { data, error } = await supabase
     .from("questions")
     .select(FULL_COLUMNS)
@@ -51,6 +53,7 @@ export async function getFullQuestions(form: number, blockNumber: number): Promi
 
 /** Number of blocks in a form (for "Block X of Y" and full-exam sweeps). */
 export async function getBlockCount(form: number): Promise<number> {
+  if (PREVIEW) return 2;
   const { data, error } = await supabase
     .from("questions")
     .select("block_number")
@@ -63,6 +66,7 @@ export async function getBlockCount(form: number): Promise<number> {
 
 /** Exam-safe questions for a block of a form, q_number order. No answer key. */
 export async function getExamQuestions(form: number, blockNumber: number): Promise<ExamQuestion[]> {
+  if (PREVIEW) return previewExamQuestions(form, blockNumber);
   const { data, error } = await supabase
     .from("questions")
     .select(EXAM_COLUMNS)
@@ -75,6 +79,7 @@ export async function getExamQuestions(form: number, blockNumber: number): Promi
 
 /** Answer key for scoring — fetched ONLY at submit time. */
 export async function getAnswerKey(questionIds: string[]): Promise<Map<string, string>> {
+  if (PREVIEW) return previewAnswerKey(questionIds);
   if (questionIds.length === 0) return new Map();
   const { data, error } = await supabase
     .from("questions")
@@ -203,14 +208,15 @@ export async function clearBlockProgress(sessionId: string): Promise<void> {
 export async function getCompletedBlock(
   userId: string,
   form: number,
-  block: number
+  block: number,
+  mode: SessionMode = "block"
 ): Promise<{ session: BlockSession; questions: FullQuestion[]; answers: ReviewAnswer[] } | null> {
   if (PREVIEW) return null;
   const { data: sess, error: sErr } = await supabase
     .from("block_sessions")
     .select("*")
     .eq("user_id", userId)
-    .eq("mode", "block")
+    .eq("mode", mode)
     .eq("nbme_form", form)
     .eq("block_number", block)
     .eq("is_complete", true)
@@ -356,9 +362,11 @@ export async function submitBlock(
   const map = new Map<string, string>();
   if (answered.length > 0) {
     const rows = answered.map((a) => ({ ...a, user_id: userId, block_session_id: sessionId }));
+    // Upsert on (block_session_id, question_id) (unique index, migration 0009): a
+    // re-submit of the same sitting UPDATES rather than inserting a second row.
     const { data, error: attemptsError } = await supabase
       .from("attempts")
-      .insert(rows)
+      .upsert(rows, { onConflict: "block_session_id,question_id" })
       .select("id, question_id");
     if (attemptsError) throw attemptsError;
     for (const r of (data ?? []) as { id: string; question_id: string }[]) map.set(r.question_id, r.id);
@@ -383,9 +391,13 @@ export async function submitBlock(
  */
 export async function recordAttempt(userId: string, sessionId: string, a: AttemptInput): Promise<string | null> {
   if (PREVIEW) return `preview-attempt-${a.question_id}`;
+  // Upsert on (block_session_id, question_id) (unique index, migration 0009):
+  // answering the same question twice in one sitting UPDATES the row instead of
+  // inserting a duplicate. A separate sitting has a new session id → a new row.
   const { data, error } = await supabase
     .from("attempts")
-    .insert({ is_review: false, ...a, user_id: userId, block_session_id: sessionId })
+    .upsert({ is_review: false, ...a, user_id: userId, block_session_id: sessionId },
+      { onConflict: "block_session_id,question_id" })
     .select("id")
     .single();
   if (error) throw error;

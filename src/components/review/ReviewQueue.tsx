@@ -8,7 +8,7 @@ import { updateAttemptErrorTag } from "@/lib/queries";
 import type { ErrorTag } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { CheckCircle2, ChevronLeft, ChevronRight, LogOut } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, LogOut, RotateCcw } from "lucide-react";
 
 export type { ReviewAnswer } from "@/lib/types";
 
@@ -22,6 +22,8 @@ interface Props {
   initialQuestionId?: string;
   /** Start walking every question rather than just the misses+flags. */
   defaultAllMode?: boolean;
+  /** When set, show an explicit "Retake" action (the ONLY path to a fresh sitting). */
+  onRetake?: () => void;
 }
 
 const noop = () => {};
@@ -34,6 +36,7 @@ export default function ReviewQueue({
   exitLabel = "Exit",
   initialQuestionId,
   defaultAllMode = false,
+  onRetake,
 }: Props) {
   // Local tag state so "Y tagged" updates live and survives navigation.
   const [tags, setTags] = useState<Record<number, ErrorTag | null>>(() => {
@@ -163,6 +166,11 @@ export default function ReviewQueue({
     <div className="flex h-screen flex-col bg-background">
       <Header
         title={title} onExit={onExit} exitLabel={exitLabel}
+        extra={onRetake && (
+          <Button variant="navy" size="sm" onClick={onRetake} title="Start a new, separate sitting of this block">
+            <RotateCcw className="size-4" /> Retake
+          </Button>
+        )}
         progress={
           <span className="flex items-center gap-2">
             <span>Question <strong className="text-navy-foreground">{safePos + 1}</strong> of {queue.length}</span>
@@ -260,8 +268,9 @@ export default function ReviewQueue({
   );
 }
 
-function Header({ title, progress, onExit, exitLabel, modeToggle }: {
-  title: string; progress: React.ReactNode; onExit: () => void; exitLabel: string; modeToggle?: React.ReactNode;
+function Header({ title, progress, onExit, exitLabel, modeToggle, extra }: {
+  title: string; progress: React.ReactNode; onExit: () => void; exitLabel: string;
+  modeToggle?: React.ReactNode; extra?: React.ReactNode;
 }) {
   return (
     <header className="flex items-center justify-between gap-4 bg-navy px-4 py-2.5 text-navy-foreground">
@@ -271,6 +280,7 @@ function Header({ title, progress, onExit, exitLabel, modeToggle }: {
       </div>
       <div className="flex items-center gap-3">
         {modeToggle}
+        {extra}
         <Button variant="navy" size="sm" onClick={onExit}><LogOut className="size-4" /> {exitLabel}</Button>
       </div>
     </header>

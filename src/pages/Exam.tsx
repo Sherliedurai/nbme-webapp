@@ -30,8 +30,7 @@ import LabValuesModal from "@/components/exam/LabValuesModal";
 import CalculatorModal from "@/components/exam/CalculatorModal";
 import SubmitReviewModal from "@/components/exam/SubmitReviewModal";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
 const BLOCK_SECONDS = 30 * 60;
 
@@ -216,6 +215,19 @@ export default function Exam() {
     [commitDwell, saveQuestion]
   );
 
+  // ── Keyboard: ← / → move between questions (skip when typing in a control) ──
+  useEffect(() => {
+    if (phase !== "active") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+      if (e.key === "ArrowRight") { e.preventDefault(); goTo(currentIndexRef.current + 1); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); goTo(currentIndexRef.current - 1); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, goTo]);
+
   // ── Suspend / leave → freeze the clock server-side (interrupted) ───────────
   const leaveInterrupted = useCallback(async () => {
     if (finalizedRef.current || !sessionIdRef.current) return;
@@ -310,6 +322,7 @@ export default function Exam() {
   const secondsRemaining = useBlockTimer(deadline, onExpire);
 
   const answeredCount = useMemo(() => states.filter((s) => s.selectedLetter != null).length, [states]);
+  const flaggedCount = useMemo(() => states.filter((s) => s.flagged).length, [states]);
   const navCells: NavCell[] = useMemo(
     () => states.map((s) => ({ state: s.selectedLetter != null ? "answered" : "unvisited", flagged: s.flagged })),
     [states]
@@ -357,31 +370,21 @@ export default function Exam() {
     );
   }
   if (phase === "completed" && completed) {
-    const total = completed.questions.length;
-    const correct = completed.answers.filter((a, i) => a.selectedLetter === completed.questions[i].correct_letter).length;
-    const answered = completed.answers.filter((a) => a.selectedLetter != null).length;
+    // Re-entering a finished block opens READ-ONLY review — viewing records nothing;
+    // only re-tagging a miss updates the ORIGINAL attempt. Retake is explicit + confirmed.
     return (
-      <div className="grid min-h-screen place-items-center bg-background p-6">
-        <Card className="w-full max-w-md text-center">
-          <CardContent className="space-y-4 p-8">
-            <CheckCircle2 className="mx-auto size-9 text-correct" />
-            <div className="text-xs font-semibold uppercase tracking-widest text-primary">NBME {form} · Block {blockNumber} — already completed</div>
-            <div className="text-5xl font-bold tabular-nums text-slate-800">{correct}<span className="text-2xl text-muted-foreground">/{total}</span></div>
-            <div className="text-sm text-muted-foreground">
-              {Math.round((correct / total) * 100)}% · {answered} of {total} answered.
-              You've finished this block — nothing was re-recorded by opening it.
-            </div>
-            <div className="flex flex-col gap-2 pt-1">
-              <Button onClick={() => { setReviewData(completed); setReviewFocus({ allMode: true }); setPhase("review"); }}>Review answers</Button>
-              <Button variant="outline"
-                onClick={() => { if (window.confirm("Retake this block from scratch? This starts a new, separate sitting.")) startFresh(); }}>
-                Retake block (fresh sitting)
-              </Button>
-              <Button variant="ghost" onClick={() => navigate("/")}>Back to home</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <ReviewQueue
+        questions={completed.questions}
+        answers={completed.answers}
+        onExit={() => navigate("/")}
+        exitLabel="Home"
+        title={`NBME ${form} · Block ${blockNumber} — review`}
+        defaultAllMode
+        onRetake={() => {
+          if (window.confirm("Retake this block from scratch? This starts a new, separate sitting — your recorded answers stay untouched."))
+            void startFresh();
+        }}
+      />
     );
   }
   if (phase === "error") {
@@ -401,7 +404,7 @@ export default function Exam() {
     <div className="flex h-screen flex-col bg-background">
       <ExamTopBar
         blockNumber={blockNumber} blockCount={blockCount} currentIndex={currentIndex} total={questions.length}
-        answeredCount={answeredCount} secondsRemaining={secondsRemaining}
+        answeredCount={answeredCount} flaggedCount={flaggedCount} secondsRemaining={secondsRemaining}
         onEndBlock={() => setShowSubmitReview(true)}
         onEndExam={() => { if (window.confirm("End the exam? Your block will be submitted.")) doSubmit("home"); }}
       />

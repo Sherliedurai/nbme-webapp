@@ -206,12 +206,26 @@ export default function FullExam() {
     }
   }
 
+  // ── Keyboard: ← / → move between questions (skip when typing in a control) ──
+  useEffect(() => {
+    if (phase !== "active") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+      if (e.key === "ArrowRight") { e.preventDefault(); goTo(currentIndexRef.current + 1); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); goTo(currentIndexRef.current - 1); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, goTo]);
+
   const onExpire = useCallback(() => {
     if (phaseRef.current === "active") endBlock();
   }, [endBlock]);
   const secondsRemaining = useBlockTimer(deadline, onExpire);
 
   const answeredCount = useMemo(() => states.filter((s) => s.selectedLetter != null).length, [states]);
+  const flaggedCount = useMemo(() => states.filter((s) => s.flagged).length, [states]);
   const navCells: NavCell[] = useMemo(
     () => states.map((s) => ({ state: s.selectedLetter != null ? "answered" : "unvisited", flagged: s.flagged })),
     [states]
@@ -256,6 +270,7 @@ export default function FullExam() {
         currentIndex={currentIndex}
         total={questions.length}
         answeredCount={answeredCount}
+        flaggedCount={flaggedCount}
         secondsRemaining={secondsRemaining}
         onEndBlock={() => setShowSubmitReview(true)}
         onEndExam={() => { if (window.confirm("Abandon the full exam? Progress is lost.")) navigate("/"); }}
