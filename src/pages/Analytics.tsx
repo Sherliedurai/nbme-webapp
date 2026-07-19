@@ -57,11 +57,24 @@ export default function Analytics() {
   // Per-form scores are computed over ALL attempts (the whole point is not to pool).
   const formScores = useMemo(() => (attempts ? scoresByForm(attempts) : []), [attempts]);
 
-  // Everything below the form strip is scoped to the selected form.
-  const scoped = useMemo(
-    () => (attempts ? (formFilter == null ? attempts : attempts.filter((a) => a.nbmeForm === formFilter)) : null),
-    [attempts, formFilter]
-  );
+  // The breadcrumb scopes the ENTIRE page. `scoped` is the single source of truth
+  // every per-scope section reads from — narrowed by BOTH the selected form and the
+  // selected block, discretely (all forms → one form → one block). Never blended.
+  const scoped = useMemo(() => {
+    if (!attempts) return null;
+    let rows = formFilter == null ? attempts : attempts.filter((a) => a.nbmeForm === formFilter);
+    if (formFilter != null && drillBlock != null) rows = rows.filter((a) => a.blockNumber === drillBlock);
+    return rows;
+  }, [attempts, formFilter, drillBlock]);
+
+  // Human label for the active scope, shown on every scoped section header.
+  // Derived purely from the selection — no form is ever named in code.
+  const scopeLabel = formFilter == null
+    ? "All forms"
+    : drillBlock == null
+      ? `NBME ${formFilter}`
+      : `NBME ${formFilter} · Block ${drillBlock}`;
+  const atBlock = formFilter != null && drillBlock != null;
 
   const fi = useMemo(() => (scoped ? firstInstinct(scoped) : null), [scoped]);
   const byDiscipline = useMemo(
@@ -76,7 +89,7 @@ export default function Analytics() {
   const swSystem = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.system) : []), [scoped]);
   const swType = useMemo(() => (scoped ? accuracyByTag(scoped, (a) => a.questionType) : []), [scoped]);
 
-  // Practice-vs-exam split (unscoped by form): a big gap = pressure/retrieval, not content.
+  // Practice-vs-exam split (scoped to the selection): a big gap = pressure/retrieval, not content.
   const modeSplit = useMemo(() => {
     if (!scoped) return null;
     const cut = (pred: (a: AnalyticsAttempt) => boolean) => {
@@ -94,8 +107,8 @@ export default function Analytics() {
   // Cross-form trend — over ALL attempts, since the point is comparing forms.
   const trend = useMemo(() => (attempts ? tagTrendByForm(attempts, (a) => a.discipline) : null), [attempts]);
 
-  // Wrong-answer filter — every question currently gotten wrong, across all sittings.
-  const allWrong = useMemo(() => (attempts ? wrongAnswers(attempts) : []), [attempts]);
+  // Wrong-answer filter — every question currently gotten wrong WITHIN the active scope.
+  const allWrong = useMemo(() => (scoped ? wrongAnswers(scoped) : []), [scoped]);
   const [fSystem, setFSystem] = useState("");
   const [fDiscipline, setFDiscipline] = useState("");
   const [fType, setFType] = useState("");
@@ -120,8 +133,8 @@ export default function Analytics() {
   const openOneInReview = (questionId: string) =>
     navigate("/review/queue", { state: { questionIds: [questionId], focusId: questionId, title: "Question review" } });
 
-  // Anki export — her incorrect + flagged set as a selection JSON for genanki.
-  const deckRows = useMemo(() => (attempts ? reviewDeckRows(attempts) : []), [attempts]);
+  // Anki export / cold re-attempt — her incorrect + flagged set WITHIN the active scope.
+  const deckRows = useMemo(() => (scoped ? reviewDeckRows(scoped) : []), [scoped]);
   const [exporting, setExporting] = useState(false);
   async function exportAnki() {
     if (!user || deckRows.length === 0) return;
@@ -188,8 +201,8 @@ export default function Analytics() {
         {/* ── 0. Scores by form (never pooled) + form filter ───────────────── */}
         {attempts && attempts.length > 0 && formScores.length > 0 && (
           <section>
-            <SectionHead icon={FileText} title="Scores by form"
-              sub="Each form scored on its own — a pooled average across forms doesn't predict a pass." />
+            <SectionHead icon={FileText} title="Scores by form" scope="All forms · comparison"
+              sub="Each form scored on its own — a pooled average across forms doesn't predict a pass. Tap a form to scope the page." />
             <div className="grid gap-3 sm:grid-cols-3">
               {formScores.map((f) => {
                 const w = Math.round(f.accuracy * 100);
@@ -228,7 +241,7 @@ export default function Analytics() {
         {attempts && attempts.length > 0 && (
           <section>
             <SectionHead icon={FolderTree} title="Drill down — form → block → question"
-              sub="Every level stays separate — never collapsed into one blended number." />
+              sub="This breadcrumb scopes the whole page below it. Every level stays separate — never collapsed into one blended number." />
             <div className="mb-3 flex flex-wrap items-center gap-1.5 text-sm">
               <button onClick={() => setFormFilter(null)} className={cn("rounded px-2 py-1", formFilter == null ? "font-semibold text-slate-800" : "text-primary hover:underline")}>All forms</button>
               {formFilter != null && (<>
@@ -319,8 +332,8 @@ export default function Analytics() {
           <>
             {/* ── Strong & weak by tag (scoped) + practice-vs-exam ──────────── */}
             <section>
-              <SectionHead icon={Layers} title="Strong & weak by tag"
-                sub={`Accuracy per tag${formFilter == null ? " (all forms)" : ` · NBME ${formFilter}`}, weakest first. Raw counts, no percentiles.`} />
+              <SectionHead icon={Layers} title="Strong & weak by tag" scope={scopeLabel}
+                sub="Accuracy per tag, weakest first. Raw counts, no percentiles." />
               <div className="grid gap-4 md:grid-cols-3">
                 <TagCard heading="By discipline" rows={swDiscipline} />
                 <TagCard heading="By system" rows={swSystem} />
@@ -343,7 +356,7 @@ export default function Analytics() {
 
             {/* ── 1. First instinct ─────────────────────────────────────────── */}
             <section>
-              <SectionHead icon={Repeat} title="First-instinct tracker"
+              <SectionHead icon={Repeat} title="First-instinct tracker" scope={scopeLabel}
                 sub="Reaching the right answer, then talking yourself out of it, is a near-free score gain." />
 
               {fi.overThreshold && (
@@ -374,7 +387,7 @@ export default function Analytics() {
 
             {/* ── 2. Error types ────────────────────────────────────────────── */}
             <section>
-              <SectionHead icon={Tags} title="Error-type breakdown"
+              <SectionHead icon={Tags} title="Error-type breakdown" scope={scopeLabel}
                 sub="Tag each miss in review. This settles content-vs-process with data, not opinion." />
 
               {byDiscipline.untaggedMisses > 0 && (
@@ -441,16 +454,21 @@ export default function Analytics() {
 
             {/* ── 3. Pacing ─────────────────────────────────────────────────── */}
             <section>
-              <SectionHead icon={Gauge} title="Pacing — accuracy by position in block"
+              <SectionHead icon={Gauge} title="Pacing — accuracy by position in block" scope={scopeLabel}
                 sub="A late-question dropoff means rushing the tail; an early one means a slow start." />
               <AccuracyBars buckets={pacing} />
             </section>
 
             {/* ── 4. Stamina ────────────────────────────────────────────────── */}
             <section>
-              <SectionHead icon={TrendingDown} title="Stamina — accuracy by block (full exams)"
+              <SectionHead icon={TrendingDown} title="Stamina — accuracy by block (full exams)" scope={scopeLabel}
                 sub="A steady decline across blocks is fatigue, not content." />
-              {stamina.length === 0 ? (
+              {atBlock ? (
+                <Card><CardContent className="p-6 text-sm text-muted-foreground">
+                  Stamina compares blocks against each other, so it doesn't apply to a single block. Clear the block in the
+                  breadcrumb (pick a whole form, or All forms) to see block-to-block fatigue.
+                </CardContent></Card>
+              ) : stamina.length === 0 ? (
                 <Card><CardContent className="p-6 text-sm text-muted-foreground">
                   No full-exam sittings yet. Run a full exam and block-to-block stamina shows here.
                 </CardContent></Card>
@@ -462,7 +480,7 @@ export default function Analytics() {
             {/* ── 5. Cross-form trend (all forms) ───────────────────────────── */}
             {trend && trend.rows.length > 0 && (
               <section>
-                <SectionHead icon={LineChart} title="Trend by discipline — across forms"
+                <SectionHead icon={LineChart} title="Trend by discipline — across forms" scope="All forms · comparison"
                   sub="Is the gap actually closing? Accuracy per discipline, one column per form. Weakest first." />
                 {trend.forms.length < 2 && (
                   <p className="mb-3 text-xs text-muted-foreground">
@@ -506,8 +524,8 @@ export default function Analytics() {
             {/* ── 6. Wrong-answer filter (all sittings) ─────────────────────── */}
             <section>
               <div className="mb-3 flex items-start justify-between gap-3">
-                <SectionHead icon={ListChecks} title={`Wrong-answer review (${wrongFiltered.length})`}
-                  sub="Every question you currently get wrong, across all sittings. Filter, then walk them as a queue." />
+                <SectionHead icon={ListChecks} title={`Wrong-answer review (${wrongFiltered.length})`} scope={scopeLabel}
+                  sub="Every question you currently get wrong in this scope. Filter, then walk them as a queue." />
                 {deckRows.length > 0 && (
                   <div className="flex shrink-0 items-center gap-2">
                     <Button size="sm" onClick={() => navigate("/review/deck")}
@@ -633,12 +651,19 @@ function ErrorTagSelect({ value, onChange }: { value: string; onChange: (v: stri
 }
 
 // ── small presentational pieces ───────────────────────────────────────────────
-function SectionHead({ icon: Icon, title, sub }: { icon: typeof Repeat; title: string; sub: string }) {
+function SectionHead({ icon: Icon, title, sub, scope }: { icon: typeof Repeat; title: string; sub: string; scope?: string }) {
   return (
     <div className="mb-3 flex items-start gap-2.5">
       <Icon className="mt-0.5 size-5 shrink-0 text-primary" />
       <div>
-        <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
+          {scope && (
+            <span className="rounded-full border border-primary/30 bg-accent px-2 py-0.5 text-xs font-medium text-primary">
+              {scope}
+            </span>
+          )}
+        </div>
         <p className="text-sm text-muted-foreground">{sub}</p>
       </div>
     </div>

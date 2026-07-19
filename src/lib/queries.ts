@@ -2,6 +2,7 @@ import { supabase } from "./supabase";
 import { PREVIEW } from "./preview";
 import type { AnswerKeyRow, BlockProgressRow, BlockSession, ExamQuestion, FullQuestion, ReviewAnswer, SessionMode } from "./types";
 import type { AnalyticsAttempt, ErrorTag } from "./analytics";
+import { previewAnalyticsAttempts } from "./previewData";
 
 const EXAM_COLUMNS =
   "id, nbme_form, block_number, q_number, vignette_text, options, clinical_image_url, system_tag, discipline_tag, question_type";
@@ -471,53 +472,6 @@ export async function getAttemptsWithQuestions(userId: string): Promise<Analytic
 }
 
 /** Deterministic synthetic dataset so /analytics renders under VITE_PREVIEW. */
-function previewAnalyticsAttempts(): AnalyticsAttempt[] {
-  const LETTERS = ["A", "B", "C", "D", "E"];
-  const disciplines = ["Physiology", "Pathology", "Pharmacology", "Biochemistry", "Behavioral Sciences"];
-  const systems = ["Cardiovascular", "Renal", "Neurology", "Endocrine", "Multisystem"];
-  const qtypes = ["mechanism", "diagnosis", "next-step", "interpretation", "association"];
-  const tags = ["knowledge_gap", "discriminator_miss", "primary_secondary", "process_error"] as const;
-  const out: AnalyticsAttempt[] = [];
-  // Two full-exam blocks so stamina + pacing have shape.
-  for (let block = 1; block <= 2; block++) {
-    for (let i = 0; i < 20; i++) {
-      const q = (block - 1) * 20 + i + 1;
-      const correct = LETTERS[(q * 3) % 5];
-      // fatigue: later positions + later block miss more often
-      const missBias = (i >= 15 ? 2 : 0) + (block === 2 ? 1 : 0);
-      const finalWrong = (q + missBias) % 4 === 0;
-      const final = finalWrong ? LETTERS[(q + 1) % 5] : correct;
-      // ~1 in 4 answers changed; skew a few of them correct→incorrect
-      const didChange = q % 4 === 0;
-      const first = didChange
-        ? (q % 8 === 0 ? correct : LETTERS[(q + 2) % 5]) // some changed away from the right answer
-        : final;
-      out.push({
-        questionId: `preview-${q}`,
-        attemptId: `preview-a-${q}`,
-        createdAt: new Date(Date.UTC(2026, 5, block, 0, q)).toISOString(),
-        firstLetter: first,
-        finalLetter: final,
-        correctLetter: correct,
-        changed: first !== final,
-        errorTag: final !== correct ? tags[q % tags.length] : null,
-        flagged: q % 9 === 0,
-        qNumber: q,
-        nbmeForm: 31,
-        blockNumber: block,
-        discipline: disciplines[q % disciplines.length],
-        system: systems[q % systems.length],
-        questionType: qtypes[q % qtypes.length],
-        mode: block === 1 ? "block" : "practice",
-        paused: false,
-        secondsSpent: 40 + ((q * 7) % 60),
-        firstAnswerSeconds: 15 + ((q * 5) % 40),
-      });
-    }
-  }
-  return out;
-}
-
 /**
  * A set of questions with the user's MOST RECENT attempt at each — powers the
  * review QUEUE opened from the wrong-answer filter. Returned in the SAME ORDER
