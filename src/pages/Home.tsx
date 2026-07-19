@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getForms, getResumableSessions, type FormSummary } from "@/lib/queries";
+import { getAttemptsWithQuestions, getCompletedBlocks, getForms, getResumableSessions, type FormSummary } from "@/lib/queries";
 import type { BlockSession } from "@/lib/types";
+import { blocksForForm, canonicalizeAttempts, modeClass, type AnalyticsAttempt, type BlockSummary } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { BarChart3, BookOpen, LogOut, PlayCircle, Timer, Layers, FileText, SlidersHorizontal, RotateCcw } from "lucide-react";
+import { BarChart3, BookOpen, CheckCircle2, LogOut, PlayCircle, Timer, Layers, FileText, SlidersHorizontal, RotateCcw } from "lucide-react";
 
 type Mode = "practice" | "block" | "full_exam";
 
@@ -24,6 +25,8 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("practice");
   const [error, setError] = useState<string | null>(null);
   const [resumables, setResumables] = useState<BlockSession[]>([]);
+  const [completed, setCompleted] = useState<{ mode: string; form: number | null; block: number | null }[]>([]);
+  const [attempts, setAttempts] = useState<AnalyticsAttempt[]>([]);
 
   useEffect(() => {
     getForms()
@@ -37,10 +40,36 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
     getResumableSessions(user.id).then(setResumables).catch(() => {});
+    getCompletedBlocks(user.id).then(setCompleted).catch(() => {});
+    // Canonical (one attempt per question per mode-class) so a completed block's
+    // score reads 18/20, never an inflated 36/40 from a reopened sitting.
+    getAttemptsWithQuestions(user.id).then((raw) => setAttempts(canonicalizeAttempts(raw))).catch(() => {});
   }, [user]);
 
   const active = MODES.find((m) => m.id === mode)!;
   const selected = forms?.find((f) => f.form === form) ?? null;
+  const gridClass = mode === "practice" ? "practice" : "timed"; // grid modes: practice | block
+
+  // Which (form, block) are finished in the CURRENT grid's mode-class. A full_exam
+  // sitting finishes every block of its form, so it marks them all timed-complete.
+  const completedBlocks = useMemo(() => {
+    const s = new Set<number>();
+    if (!selected) return s;
+    for (const c of completed) {
+      if (c.form !== selected.form) continue;
+      if (modeClass(c.mode) !== gridClass) continue;
+      if (c.mode === "full_exam") { for (let b = 1; b <= selected.blockCount; b++) s.add(b); }
+      else if (c.block != null) s.add(c.block);
+    }
+    return s;
+  }, [completed, selected, gridClass]);
+
+  // Per-block score for the current form, split timed vs practice (from analytics).
+  const blockScores = useMemo(() => {
+    const m = new Map<number, BlockSummary>();
+    if (selected) for (const b of blocksForForm(attempts, selected.form)) m.set(b.block, b);
+    return m;
+  }, [attempts, selected]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -155,20 +184,34 @@ export default function Home() {
                 </Card>
               ) : (
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-                  {Array.from({ length: selected.blockCount }, (_, i) => i + 1).map((n) => (
-                    <Card key={n} className="transition-shadow hover:shadow-md">
-                      <CardContent className="flex flex-col items-start gap-3 p-4">
-                        <div>
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">Block</div>
-                          <div className="text-2xl font-semibold text-slate-800">{n}</div>
-                        </div>
-                        <Button size="sm" className="w-full"
-                          onClick={() => navigate(`/${mode === "practice" ? "practice" : "exam"}/${selected.form}/${n}`)}>
-                          <PlayCircle className="size-4" /> Start
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  ))}
+                  {Array.from({ length: selected.blockCount }, (_, i) => i + 1).map((n) => {
+                    const done = completedBlocks.has(n);
+                    const b = blockScores.get(n);
+                    const score = done ? (gridClass === "practice" ? b?.practice : b?.timed) : undefined;
+                    const to = `/${mode === "practice" ? "practice" : "exam"}/${selected.form}/${n}`;
+                    return (
+                      <Card key={n} className={cn("transition-shadow hover:shadow-md", done && "bg-muted/40 border-dashed")}>
+                        <CardContent className="flex flex-col items-start gap-3 p-4">
+                          <div className="flex w-full items-start justify-between">
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-muted-foreground">Block</div>
+                              <div className={cn("text-2xl font-semibold", done ? "text-slate-500" : "text-slate-800")}>{n}</div>
+                            </div>
+                            {done && <CheckCircle2 className="size-5 shrink-0 text-correct" />}
+                          </div>
+                          {done && score && score.total > 0 && (
+                            <div className="text-xs font-medium text-slate-600">
+                              {score.correct}/{score.total} · {Math.round(score.accuracy * 100)}%
+                            </div>
+                          )}
+                          <Button size="sm" variant={done ? "outline" : "default"} className="w-full"
+                            onClick={() => navigate(to)}>
+                            {done ? <><BookOpen className="size-4" /> Review</> : <><PlayCircle className="size-4" /> Start</>}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
             </div>

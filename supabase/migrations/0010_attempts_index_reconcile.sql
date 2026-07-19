@@ -1,0 +1,47 @@
+-- =============================================================================
+-- NBME Practice App — attempts unique-index reconciliation
+-- Migration 0010  (VERIFICATION ONLY — no DDL, nothing to change)
+--
+-- The spec once called for a PARTIAL unique index
+--     ... (block_session_id, question_id) WHERE is_review = false
+-- so that a COLD review re-attempt of a question could coexist with its graded
+-- attempt. The LIVE index (migration 0009) is the FULL, non-partial form:
+--     create unique index attempts_session_question_uniq
+--       on public.attempts (block_session_id, question_id);
+--
+-- RECONCILIATION — the full index is CORRECT; no partial version is needed.
+--
+-- Cold review re-attempts do NOT share a session with the graded attempt. The
+-- review deck (src/pages/ReviewDeck.tsx) opens its OWN block_session:
+--     createBlockSession(user.id, null, null, "custom")
+-- and every re-attempt is written into THAT session with is_review = true
+-- (src/components/exam/PracticeRunner.tsx → recordAttempt). So a graded attempt
+-- and its later cold re-attempt carry DIFFERENT block_session_id values and can
+-- never collide on (block_session_id, question_id). The uniqueness we want —
+-- one row per question per SITTING — holds in every mode without a WHERE clause.
+--
+-- A partial index would actually be WEAKER here: it would stop enforcing one row
+-- per (session, question) for review sittings, allowing a double-write inside a
+-- single review deck. The full index is the stronger, correct guard. KEEP IT.
+--
+-- HARD RULE (CLAUDE.md #1): owner runs SQL; no app writes. This file changes
+-- nothing — it exists so the decision is recorded and re-verifiable.
+-- =============================================================================
+
+-- Verify the live index is the FULL (non-partial) form. Expect ONE row whose
+-- indexdef has NO "WHERE" clause:
+--   select indexname, indexdef
+--   from pg_indexes
+--   where schemaname = 'public'
+--     and tablename = 'attempts'
+--     and indexname = 'attempts_session_question_uniq';
+
+-- Verify the invariant the full index relies on — NO graded row and review row
+-- ever share a session for the same question (expect ZERO rows):
+--   select a.block_session_id, a.question_id, count(*) filter (where a.is_review) as review_rows,
+--          count(*) filter (where not a.is_review) as graded_rows
+--   from public.attempts a
+--   where a.block_session_id is not null
+--   group by a.block_session_id, a.question_id
+--   having count(*) filter (where a.is_review) > 0
+--      and count(*) filter (where not a.is_review) > 0;

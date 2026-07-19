@@ -6,6 +6,7 @@ import { previewAnalyticsAttempts, formAttempts } from "../src/lib/previewData";
 import {
   scoresByForm, tagTrendByForm, firstInstinct, accuracyByTag,
   errorTypeDistribution, pacingByPosition, staminaByBlock, wrongAnswers,
+  canonicalizeAttempts, modeClass,
   type AnalyticsAttempt,
 } from "../src/lib/analytics";
 
@@ -81,6 +82,41 @@ const future = [
 check("Unknown forms 22 & 25 appear automatically (nothing hardcoded to 20/31)",
   JSON.stringify(scoresByForm(future).map((f) => f.form)) === JSON.stringify([22, 25]) &&
   JSON.stringify(tagTrendByForm(future, (a) => a.discipline).forms) === JSON.stringify([22, 25]));
+
+// ── Canonical sitting de-dup: reopening/retaking a block must NOT inflate counts ─
+console.log("\n=== canonical sitting de-dup (count each question once per mode-class) ===");
+// Simulate re-entering/retaking NBME 31 Block 1 as a SECOND timed sitting: same
+// questions, a day later, answered differently. The pre-fix bug summed both → 40.
+const b1 = all.filter((a) => a.nbmeForm === 31 && a.blockNumber === 1);
+const reSit: AnalyticsAttempt[] = b1.map((a) => ({
+  ...a,
+  attemptId: `${a.attemptId}-resit`,
+  createdAt: new Date(Date.parse(a.createdAt) + 86_400_000).toISOString(), // one day later
+  finalLetter: a.correctLetter === "A" ? "B" : "A", // force a different answer
+}));
+const withDup = [...all, ...reSit];
+const canon = canonicalizeAttempts(withDup);
+const c31b1 = canon.filter((a) => a.nbmeForm === 31 && a.blockNumber === 1);
+check("Raw data has the duplicate sitting (40 rows for NBME 31 Block 1)", withDup.filter((a) => a.nbmeForm === 31 && a.blockNumber === 1).length === 40);
+check("Canonical collapses the re-sitting to 20 (one per question), not 40", c31b1.length === 20, `got ${c31b1.length}`);
+check("Canonical keeps the LATER sitting (the retake supersedes)", c31b1.every((a) => a.attemptId.endsWith("-resit")));
+check("scoresByForm over canonical counts NBME 31 once = 40 (2 blocks), not 60", scoresByForm(canon).find((f) => f.form === 31)!.total === 40, `got ${scoresByForm(canon).find((f) => f.form === 31)!.total}`);
+check("Canonical is idempotent (canon(canon(x)) === canon(x))", canonicalizeAttempts(canon).length === canon.length);
+
+// Timed and practice of the SAME question must BOTH survive (different mode-classes)
+const oneQ = all.find((a) => a.nbmeForm === 20 && a.blockNumber === 1)!; // mode 'block' (timed)
+const asPractice: AnalyticsAttempt = { ...oneQ, mode: "practice", attemptId: `${oneQ.attemptId}-prac`, createdAt: new Date(Date.parse(oneQ.createdAt) + 1000).toISOString() };
+const canon2 = canonicalizeAttempts([...all, asPractice]);
+check("Canonical keeps timed & practice of the same question as separate rows", canon2.filter((a) => a.questionId === oneQ.questionId).length === 2 && modeClass("block") === "timed" && modeClass("practice") === "practice");
+
+// ── Per-form aggregate/trend exclusion (exclude "already seen" forms) ────────────
+console.log("\n=== per-form exclusion from aggregate + trend (not hardcoded to any form) ===");
+const excluded = new Set<number>([31]);
+const aggregate = all.filter((a) => !excluded.has(a.nbmeForm)); // what the All-forms scope pools
+check("Excluding NBME 31 drops it from the pooled aggregate", aggregate.every((a) => a.nbmeForm !== 31) && aggregate.length === 40);
+check("Excluding NBME 31 drops its trend column", JSON.stringify(tagTrendByForm(aggregate, (a) => a.discipline).forms) === JSON.stringify([20]));
+check("Excluded form still has its OWN per-form data intact (scoping INTO it is unfiltered)", all.filter((a) => a.nbmeForm === 31).length === 40);
+check("Exclusion is form-agnostic — excluding NBME 20 instead flips which survives", JSON.stringify(tagTrendByForm(all.filter((a) => !new Set([20]).has(a.nbmeForm)), (a) => a.discipline).forms) === JSON.stringify([31]));
 
 console.log(`\n${fails === 0 ? "ALL CHECKS PASSED ✓" : `${fails} CHECK(S) FAILED ✗`}\n`);
 process.exit(fails === 0 ? 0 : 1);

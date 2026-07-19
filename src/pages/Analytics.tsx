@@ -7,6 +7,7 @@ import {
   ERROR_TAG_META,
   accuracyByTag,
   blocksForForm,
+  canonicalizeAttempts,
   errorTypeDistribution,
   firstInstinct,
   pacingByPosition,
@@ -35,10 +36,26 @@ export default function Analytics() {
   // null = all forms; otherwise scope the whole dashboard to one form.
   const [formFilter, setFormFilter] = useState<number | null>(null);
   const [drillBlock, setDrillBlock] = useState<number | null>(null); // block within the selected form
+  // Forms she's already seen (e.g. answers memorized) skew the cross-form trend and
+  // the All-forms aggregate. Excluded here they drop out of BOTH, but keep their own
+  // per-form page. Per-form flag, persisted per device — nothing hardcoded to a form.
+  const [excludedForms, setExcludedForms] = useState<Set<number>>(loadExcludedForms);
+  const toggleExcluded = (form: number) =>
+    setExcludedForms((prev) => {
+      const next = new Set(prev);
+      next.has(form) ? next.delete(form) : next.add(form);
+      saveExcludedForms(next);
+      return next;
+    });
 
   useEffect(() => {
     if (!user) return;
-    getAttemptsWithQuestions(user.id).then(setAttempts).catch((e) => setError(e?.message ?? "Failed to load analytics."));
+    // Canonicalize at the boundary: one attempt per question per mode-class, so a
+    // reopened/retaken block never double-counts (20, not 40). Every rollup below
+    // reads this, so the fix is uniform across the whole dashboard.
+    getAttemptsWithQuestions(user.id)
+      .then((raw) => setAttempts(canonicalizeAttempts(raw)))
+      .catch((e) => setError(e?.message ?? "Failed to load analytics."));
   }, [user]);
 
   // Changing the form resets the block drill.
@@ -62,15 +79,20 @@ export default function Analytics() {
   // selected block, discretely (all forms → one form → one block). Never blended.
   const scoped = useMemo(() => {
     if (!attempts) return null;
-    let rows = formFilter == null ? attempts : attempts.filter((a) => a.nbmeForm === formFilter);
+    // All-forms scope drops excluded ("already seen") forms so the pooled numbers
+    // reflect only forms that count. Scoping INTO an excluded form still shows it in
+    // full — the exclusion is about aggregation, not hiding.
+    let rows = formFilter == null ? attempts.filter((a) => !excludedForms.has(a.nbmeForm)) : attempts.filter((a) => a.nbmeForm === formFilter);
     if (formFilter != null && drillBlock != null) rows = rows.filter((a) => a.blockNumber === drillBlock);
     return rows;
-  }, [attempts, formFilter, drillBlock]);
+  }, [attempts, formFilter, drillBlock, excludedForms]);
 
   // Human label for the active scope, shown on every scoped section header.
   // Derived purely from the selection — no form is ever named in code.
   const scopeLabel = formFilter == null
-    ? "All forms"
+    ? excludedForms.size > 0
+      ? `All counted forms (excl. ${[...excludedForms].sort((a, b) => a - b).map((f) => `NBME ${f}`).join(", ")})`
+      : "All forms"
     : drillBlock == null
       ? `NBME ${formFilter}`
       : `NBME ${formFilter} · Block ${drillBlock}`;
@@ -104,8 +126,12 @@ export default function Analytics() {
     };
   }, [scoped]);
 
-  // Cross-form trend — over ALL attempts, since the point is comparing forms.
-  const trend = useMemo(() => (attempts ? tagTrendByForm(attempts, (a) => a.discipline) : null), [attempts]);
+  // Cross-form trend — over counted forms only. An excluded ("already seen") form
+  // would add a misleading column, so it drops out of the trend just like the aggregate.
+  const trend = useMemo(
+    () => (attempts ? tagTrendByForm(attempts.filter((a) => !excludedForms.has(a.nbmeForm)), (a) => a.discipline) : null),
+    [attempts, excludedForms]
+  );
 
   // Wrong-answer filter — every question currently gotten wrong WITHIN the active scope.
   const allWrong = useMemo(() => (scoped ? wrongAnswers(scoped) : []), [scoped]);
@@ -208,13 +234,18 @@ export default function Analytics() {
                 const w = Math.round(f.accuracy * 100);
                 const tone = w >= 70 ? "text-correct" : w >= 55 ? "text-amber-600" : "text-incorrect";
                 const on = formFilter === f.form;
+                const ex = excludedForms.has(f.form);
                 return (
                   <button key={f.form} onClick={() => setFormFilter(on ? null : f.form)}
                     className={cn(
                       "rounded-lg border p-4 text-left transition-colors",
-                      on ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent"
+                      on ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent",
+                      ex && !on && "opacity-70"
                     )}>
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">NBME {f.form}</div>
+                    <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      NBME {f.form}
+                      {ex && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] normal-case text-amber-700">excl. from trend</span>}
+                    </div>
                     <div className={cn("mt-1 text-3xl font-bold tabular-nums", tone)}>{w}%</div>
                     <div className="mt-0.5 text-xs text-muted-foreground">{f.correct}/{f.total} correct{on ? " · filtering ▾" : ""}</div>
                   </button>
@@ -233,6 +264,21 @@ export default function Analytics() {
                   NBME {f.form}
                 </button>
               ))}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span title="A form you've already seen (answers memorized) skews the cross-form trend and the All-forms aggregate. Exclude it here; its own per-form page is unaffected.">
+                Count in aggregate &amp; trend:
+              </span>
+              {formScores.map((f) => {
+                const ex = excludedForms.has(f.form);
+                return (
+                  <button key={f.form} onClick={() => toggleExcluded(f.form)}
+                    className={cn("rounded-full border px-3 py-1 transition-colors",
+                      ex ? "border-amber-400 bg-amber-50 text-amber-700" : "border-primary/50 bg-accent text-primary")}>
+                    NBME {f.form}: {ex ? "excluded" : "counted"}
+                  </button>
+                );
+              })}
             </div>
           </section>
         )}
@@ -719,6 +765,20 @@ function AccuracyBars({ buckets }: { buckets: Bucket[] }) {
       })}
     </CardContent></Card>
   );
+}
+
+// Per-form "exclude from aggregate & trend" flag, persisted per device.
+const EXCLUDED_FORMS_KEY = "nbme:analytics:excludedForms:v1";
+function loadExcludedForms(): Set<number> {
+  try {
+    const raw = localStorage.getItem(EXCLUDED_FORMS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr.filter((n: unknown): n is number => typeof n === "number") : []);
+  } catch { return new Set(); }
+}
+function saveExcludedForms(s: Set<number>) {
+  try { localStorage.setItem(EXCLUDED_FORMS_KEY, JSON.stringify([...s])); } catch { /* ignore */ }
 }
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;

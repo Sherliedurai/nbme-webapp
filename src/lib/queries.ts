@@ -247,6 +247,27 @@ export async function getCompletedBlock(
   return { session, questions, answers };
 }
 
+/**
+ * Every COMPLETED sitting (is_complete=true), so Home can grey out finished blocks
+ * and show a score instead of "Start". Derived from the DB flag, not inferred from
+ * the presence of attempts (practice writes an attempt per Check, before finish).
+ * full_exam sittings carry a null block_number — they complete the whole form, so
+ * Home expands them to every block. Cold-review sittings (mode 'custom', null form)
+ * are naturally excluded since they carry no form/block.
+ */
+export async function getCompletedBlocks(
+  userId: string
+): Promise<{ mode: SessionMode; form: number | null; block: number | null }[]> {
+  if (PREVIEW) return [];
+  const { data, error } = await supabase
+    .from("block_sessions")
+    .select("mode, nbme_form, block_number")
+    .eq("user_id", userId)
+    .eq("is_complete", true);
+  if (error) throw error;
+  return ((data ?? []) as any[]).map((r) => ({ mode: r.mode as SessionMode, form: r.nbme_form, block: r.block_number }));
+}
+
 /** Load the partial answers saved for an unsubmitted block. */
 export async function loadBlockProgress(sessionId: string): Promise<BlockProgressRow[]> {
   if (PREVIEW) return [];

@@ -40,6 +40,40 @@ export interface AnalyticsAttempt {
   firstAnswerSeconds: number | null; // reasoning time (shown → first commit)
 }
 
+// ── Canonical sitting (count each question ONCE, never summed across re-sittings) ─
+
+export type ModeClass = "timed" | "practice" | "other";
+
+/** Collapse the four modes into the two cuts the dashboard actually separates. */
+export function modeClass(mode: string | null): ModeClass {
+  if (mode === "block" || mode === "full_exam") return "timed";
+  if (mode === "practice" || mode === "custom") return "practice";
+  return "other";
+}
+
+/**
+ * De-dupe re-sittings so a question counts ONCE per mode-class. Re-entering or
+ * explicitly retaking a block spawns a fresh block_session, so the same question
+ * accrues one attempt per sitting; SUMMING them inflated per-block counts (a block
+ * sat once, then reopened, reported 40 attempts instead of 20 — the reported bug).
+ *
+ * The CANONICAL attempt is the LATEST (by createdAt) within a (question, mode-class)
+ * — an explicit retake supersedes the sitting it repeats. Timed (block|full_exam)
+ * and practice (practice|custom) are kept SEPARATE so the timed-vs-practice cuts
+ * (blocksForForm, the practice/exam split) still see both. is_review cold
+ * re-attempts are already excluded upstream in getAttemptsWithQuestions, so they
+ * never reach here. Idempotent: canonicalize(canonicalize(x)) === canonicalize(x).
+ */
+export function canonicalizeAttempts(attempts: AnalyticsAttempt[]): AnalyticsAttempt[] {
+  const latest = new Map<string, AnalyticsAttempt>();
+  for (const a of attempts) {
+    const key = `${a.questionId}::${modeClass(a.mode)}`;
+    const prev = latest.get(key);
+    if (!prev || a.createdAt > prev.createdAt) latest.set(key, a);
+  }
+  return [...latest.values()];
+}
+
 export interface FormScore {
   form: number;
   correct: number;
