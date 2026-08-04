@@ -23,7 +23,9 @@ ROOT = pathlib.Path(__file__).resolve().parent
 ap = argparse.ArgumentParser(description="Reconcile the verification pass against extraction.")
 ap.add_argument("--form", type=int, required=True, help="NBME form number (e.g. 20). No default.")
 args = ap.parse_args()
-O = ROOT / f"out{args.form}"
+# Outputs under <repo>/import/out<form>/ (gitignored); ROOT is <repo>/scripts, so re-root
+# to ROOT.parent/import/out<form> (matches build_form.py, PIPELINE.md, and .gitignore).
+O = ROOT.parent / "import" / f"out{args.form}"
 
 rows = []
 disagreements = []

@@ -91,6 +91,13 @@ def emit_review_csv(items, block):
         hl = it.get("highlight_correct_letter")
         if hl and hl != it["correct_letter"]:
             rows.append([q, "answer_mismatch", "", "", f"highlight={hl} chosen={it['correct_letter']}"])
+        # D3: prior taker's filled-radio pick, captured separately from the key. Informational
+        # only — correct_letter is set solely from the printed "Correct Answer:" line and is
+        # never derived from this. Surfaced so the physician can see which distractor was chosen.
+        # Forms that don't capture selected_letter have no key here, so nothing is emitted.
+        sel = it.get("selected_letter")
+        if sel and sel != it["correct_letter"]:
+            rows.append([q, "prior_taker_pick", "", "", f"selected={sel} (correct={it['correct_letter']})"])
         if (it.get("extraction_notes") or "").strip():
             rows.append([q, "note", "", "", it["extraction_notes"]])
     path = OUT / f"block{block}_review_needed.csv"
@@ -151,11 +158,17 @@ def cmd_sql():
             enr_sql = dollar_quote(enr_js, "enr") + "::jsonb"
         else:
             enr_sql = "null"
-        # No NBME explanation exists for these self-assessment forms; store the previous test-taker's
-        # note if present (clearly the only "explanation" text on the page), else an explicit
-        # placeholder. NOT NULL column.
-        src = (it.get("student_note") or "").strip()
-        src = src if src else "(NBME self-assessment — no official explanation provided.)"
+        # source_explanation precedence (additive, form-safe — D1):
+        #   1) official NBME explanation printed on the page (forms like 28 that carry one)
+        #   2) previous test-taker's note (forms like 20 with no official explanation)
+        #   3) explicit placeholder (NOT NULL column)
+        # Forms without an official_explanation key fall straight through to the prior behavior,
+        # so Form 20 and any explanation-less form are byte-for-byte unchanged.
+        src = (it.get("official_explanation") or "").strip()
+        if not src:
+            src = (it.get("student_note") or "").strip()
+        if not src:
+            src = "(NBME self-assessment — no official explanation provided.)"
         lines.append(
             "insert into public.questions\n"
             "  (nbme_form, block_number, q_number, vignette_text, options, correct_letter,\n"
@@ -193,7 +206,12 @@ def main():
     sub.add_parser("sql", help="emit consolidated load SQL for all merged blocks")
     a = ap.parse_args()
     NBME_FORM = a.form
-    OUT = ROOT / f"out{a.form}"
+    # Outputs live under <repo>/import/out<form>/ (gitignored), NOT beside the script.
+    # ROOT is <repo>/scripts, so the form dir is ROOT.parent/import/out<form>. This matches
+    # PIPELINE.md, .gitignore (import/out*/), and every path message emitted in this file.
+    # (When this logic lived in import/build_form20.py, ROOT was import/ and ROOT/out20 was
+    # already import/out20; the generalization moved the file to scripts/ and must re-root here.)
+    OUT = ROOT.parent / "import" / f"out{a.form}"
     if a.cmd == "merge":
         cmd_merge(a.block)
     else:

@@ -15,10 +15,26 @@ Outputs (gitignored — third-party content):
   import/mehlman/md/<file>.md
   import/mehlman/chunks.json  [{id,file,label,source_label,text,tokens,file_tags}]
 """
-import fitz, json, re, pathlib
+import fitz, json, re, pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SRC = ROOT / "Mehlman HY pdfs "
+
+
+def resolve_src():
+    """Resolve the Mehlman corpus dir robustly. Its name has drifted across machines and
+    worktrees ("Mehlman HY pdfs" vs a trailing-space "Mehlman HY pdfs "). A hardcoded name
+    that misses would SILENTLY build an empty index -> ALL enrichment degrades to ungrounded
+    behind a clean-looking lint report. This is the pipeline's single highest-risk silent
+    failure, so: pick the 'Mehlman*' dir that actually contains PDFs, and LOUD-FAIL if none."""
+    cands = sorted(d for d in ROOT.glob("Mehlman*") if d.is_dir() and any(d.glob("*.pdf")))
+    if not cands:
+        sys.exit(f"FATAL: no 'Mehlman*' directory containing PDFs under {ROOT} — refusing to build an empty index.")
+    if len(cands) > 1:
+        print(f"WARNING: multiple Mehlman* dirs with PDFs {[d.name for d in cands]}; using {cands[0].name!r}")
+    return cands[0]
+
+
+SRC = resolve_src()
 MD = ROOT / "import/mehlman/md"; MD.mkdir(parents=True, exist_ok=True)
 CHUNKS = ROOT / "import/mehlman/chunks.json"
 
@@ -253,8 +269,11 @@ def main():
             cid += 1
         (MD / f"{stem}.md").write_text("\n".join(md))
         print(f"  {stem:<42} {doc.page_count:>3}p  {len(records):>4} {mode}")
+    if not all_chunks:
+        sys.exit(f"FATAL: 0 chunks produced from the PDFs in {SRC.name!r} — refusing to write an empty index "
+                 f"(a silent empty index would make every enrichment ungrounded).")
     CHUNKS.write_text(json.dumps(all_chunks, ensure_ascii=False))
-    print(f"\nTotal: {len(all_chunks)} chunks -> {CHUNKS.relative_to(ROOT)}")
+    print(f"\nTotal: {len(all_chunks)} chunks from {SRC.name!r} -> {CHUNKS.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
