@@ -21,7 +21,7 @@ export interface FormSummary {
  */
 export async function getForms(): Promise<FormSummary[]> {
   if (PREVIEW) return [{ form: 20, blockCount: 2, questionCount: 40 }, { form: 31, blockCount: 2, questionCount: 40 }];
-  const { data, error } = await supabase.from("questions").select("nbme_form, block_number");
+const { data, error } = await supabase.from("questions").select("nbme_form, block_number").limit(100000);
   if (error) throw error;
   const byForm = new Map<number, { blockCount: number; questionCount: number }>();
   for (const r of (data ?? []) as { nbme_form: number; block_number: number }[]) {
@@ -578,7 +578,7 @@ export interface FilterFacets {
 
 /** Distinct tag values + counts across the bank — drives the custom-block filters. */
 export async function getFilterFacets(): Promise<FilterFacets> {
-  const { data, error } = await supabase.from("questions").select("system_tag, discipline_tag, question_type");
+const { data, error } = await supabase.from("questions").select("system_tag, discipline_tag, question_type").limit(100000);
   if (error) throw error;
   const rows = (data ?? []) as { system_tag: string; discipline_tag: string; question_type: string }[];
   const tally = (pick: (r: any) => string): FilterFacet[] => {
