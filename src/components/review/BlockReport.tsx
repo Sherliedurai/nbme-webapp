@@ -9,7 +9,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, ChevronRight, Gauge, Home, Layers, ListChecks, Repeat } from "lucide-react";
+import { useFormModes } from "@/hooks/useFormModes";
+import { formInfo, isAdjudicable } from "@/lib/formModes";
+import { AlertTriangle, ChevronRight, Gauge, Home, Layers, ListChecks, Repeat, ShieldAlert } from "lucide-react";
 
 interface Props {
   title: string;
@@ -38,6 +40,8 @@ export default function BlockReport({ title, attempts, timeUsedSec, interrupted 
   );
 
   const pctScore = total ? Math.round((correct / total) * 100) : 0;
+  const modes = useFormModes();
+  const adjudicable = isAdjudicable(formInfo(modes, attempts[0]?.nbmeForm ?? -1));
 
   return (
     <div className="min-h-screen bg-background">
@@ -50,6 +54,11 @@ export default function BlockReport({ title, attempts, timeUsedSec, interrupted 
       </header>
 
       <main className="mx-auto max-w-5xl space-y-8 px-6 py-8">
+        {adjudicable && (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-800">
+            <ShieldAlert className="size-4 shrink-0" /> Answer key pending physician validation — scores on this form may shift after review.
+          </div>
+        )}
         {/* ── Score + time ─────────────────────────────────────────────────── */}
         <section className="grid gap-4 sm:grid-cols-3">
           <Card><CardContent className="p-5">

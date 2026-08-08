@@ -1,7 +1,9 @@
 import { type ReactNode } from "react";
 import type { FullQuestion } from "@/lib/types";
 import { cn, formatDuration } from "@/lib/utils";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, ShieldAlert, XCircle } from "lucide-react";
+import { useFormModes } from "@/hooks/useFormModes";
+import { formInfo, isAdjudicable } from "@/lib/formModes";
 import ExplanationFeedback from "./ExplanationFeedback";
 
 /** Render **bold** key words in enrichment text. */
@@ -43,9 +45,16 @@ interface Props {
 export default function ExplanationPanel({ question, selectedLetter, secondsSpent }: Props) {
   const e = question.enriched_explanation;
   const correct = selectedLetter != null && selectedLetter === question.correct_letter;
+  const modes = useFormModes();
+  const adjudicable = isAdjudicable(formInfo(modes, question.nbme_form));
 
   return (
     <div className="flex h-full flex-col bg-card">
+      {adjudicable && (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-5 py-2 text-xs font-medium text-amber-800">
+          <ShieldAlert className="size-4 shrink-0" /> Answer key pending physician validation — treat this answer with caution.
+        </div>
+      )}
       {/* Status header */}
       <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3">
         {selectedLetter == null ? (

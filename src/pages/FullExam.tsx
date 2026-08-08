@@ -11,6 +11,8 @@ import {
   recordAttempt,
 } from "@/lib/queries";
 import type { ExamQuestion, FullQuestion, QuestionState } from "@/lib/types";
+import { loadFormModes } from "@/hooks/useFormModes";
+import { allowsMode, formInfo } from "@/lib/formModes";
 import { useBlockTimer } from "@/hooks/useBlockTimer";
 import ExamTopBar from "@/components/exam/ExamTopBar";
 import QuestionNavigator, { type NavCell } from "@/components/exam/QuestionNavigator";
@@ -94,6 +96,10 @@ export default function FullExam() {
     let active = true;
     (async () => {
       try {
+        // Gate: only forms whose form_modes allow 'exam' can be sat as a full exam.
+        const fm = await loadFormModes();
+        if (!active) return;
+        if (!allowsMode(formInfo(fm, form), "exam")) { navigate("/", { replace: true }); return; }
         const count = await getBlockCount(form);
         if (!active) return;
         if (count < 1) { setErrorMsg(`No blocks found for NBME ${form}.`); setPhase("error"); return; }

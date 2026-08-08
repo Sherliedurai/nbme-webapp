@@ -5,6 +5,8 @@ import {
   countAnsweredInSession, createBlockSession, getCompletedBlock, getFullQuestions,
   getUnfinishedBlock, loadBlockProgress,
 } from "@/lib/queries";
+import { loadFormModes } from "@/hooks/useFormModes";
+import { allowsMode, formInfo } from "@/lib/formModes";
 import type { BlockProgressRow, FullQuestion } from "@/lib/types";
 import PracticeRunner from "@/components/exam/PracticeRunner";
 import ReviewQueue, { type ReviewAnswer } from "@/components/review/ReviewQueue";
@@ -45,6 +47,11 @@ export default function Practice() {
     let active = true;
     (async () => {
       try {
+        // Gate: this form must permit practice (form_modes). Blocks a hand-typed
+        // /practice/NN URL from opening a sealed exam-reserved form.
+        const fm = await loadFormModes();
+        if (!active) return;
+        if (!allowsMode(formInfo(fm, form), "practice")) { navigate("/", { replace: true }); return; }
         const [qs, existing] = await Promise.all([
           getFullQuestions(form, blockNumber),
           getUnfinishedBlock(user.id, form, blockNumber, "practice"),

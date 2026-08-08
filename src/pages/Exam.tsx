@@ -17,6 +17,8 @@ import {
   updateSessionIndex,
   type AttemptInput,
 } from "@/lib/queries";
+import { loadFormModes } from "@/hooks/useFormModes";
+import { allowsMode, formInfo } from "@/lib/formModes";
 import type { BlockSession, ExamQuestion, FullQuestion, QuestionState } from "@/lib/types";
 import type { AnalyticsAttempt } from "@/lib/analytics";
 import { useBlockTimer } from "@/hooks/useBlockTimer";
@@ -115,6 +117,11 @@ export default function Exam() {
     let active = true;
     (async () => {
       try {
+        // Gate: this form must permit timed blocks (form_modes). Blocks a hand-typed
+        // /exam/NN URL from opening a sealed exam-reserved form.
+        const fm = await loadFormModes();
+        if (!active) return;
+        if (!allowsMode(formInfo(fm, form), "timed")) { navigate("/", { replace: true }); return; }
         const [count, qs, existing] = await Promise.all([
           getBlockCount(form),
           getExamQuestions(form, blockNumber),

@@ -2,6 +2,7 @@ import { supabase } from "./supabase";
 import { PREVIEW } from "./preview";
 import type { AnswerKeyRow, BlockProgressRow, BlockSession, ExamQuestion, FullQuestion, ReviewAnswer, SessionMode } from "./types";
 import type { AnalyticsAttempt, ErrorTag } from "./analytics";
+import { formsDisallowing, type FormModeInfo, type FormModesMap } from "./formModes";
 import { previewAnalyticsAttempts, previewAnswerKey, previewExamQuestions, previewQuestions } from "./previewData";
 
 const EXAM_COLUMNS =
@@ -33,6 +34,44 @@ const { data, error } = await supabase.from("questions").select("nbme_form, bloc
   return [...byForm.entries()]
     .map(([form, v]) => ({ form, ...v }))
     .sort((a, b) => a.form - b.form);
+}
+
+/**
+ * Per-form mode restrictions from public.form_modes (RLS: select for authenticated).
+ * Small curated table — no row limit needed. A form ABSENT from the table is not an
+ * error: it fails OPEN (every mode allowed) so a newly-imported form is studyable
+ * before its row is curated. Callers derive gating from this map; nothing hardcodes
+ * a form number. Fail-open forms are logged where they're consulted (see Home).
+ */
+export async function getFormModes(): Promise<FormModesMap> {
+  if (PREVIEW)
+    // Preview bank holds forms 20 & 31 only; mirror their real form_modes rows.
+    return new Map<number, FormModeInfo>([
+      [20, { allowedModes: ["timed", "practice", "custom"], keyTrust: "authoritative", note: "" }],
+      [31, { allowedModes: ["timed", "practice"], keyTrust: "authoritative", note: "" }],
+    ]);
+  const { data, error } = await supabase.from("form_modes").select("nbme_form, allowed_modes, key_trust, note");
+  if (error) throw error;
+  const map: FormModesMap = new Map();
+  for (const r of (data ?? []) as { nbme_form: number; allowed_modes: string[] | null; key_trust: string | null; note: string | null }[]) {
+    map.set(r.nbme_form, {
+      allowedModes: r.allowed_modes ?? [],
+      keyTrust: r.key_trust ?? "authoritative",
+      note: r.note ?? "",
+    });
+  }
+  return map;
+}
+
+/**
+ * Forms that must be EXCLUDED from custom-block queries — the ones whose
+ * form_modes row omits 'custom'. Fail-open forms (absent from the table) are NOT
+ * excluded, so future forms stay custom-eligible by default. This is the hard
+ * guard that stops a custom block from ever drawing an exam-reserved (sealed)
+ * form and permanently burning an unseen diagnostic. Enforced at the DB layer.
+ */
+async function customExcludedForms(): Promise<number[]> {
+  return formsDisallowing(await getFormModes(), "custom");
 }
 
 /**
@@ -576,9 +615,12 @@ export interface FilterFacets {
   questionType: FilterFacet[];
 }
 
-/** Distinct tag values + counts across the bank — drives the custom-block filters. */
+/** Distinct tag values + counts across the CUSTOM-ELIGIBLE bank — drives the custom-block filters. */
 export async function getFilterFacets(): Promise<FilterFacets> {
-const { data, error } = await supabase.from("questions").select("system_tag, discipline_tag, question_type").limit(100000);
+  const excluded = await customExcludedForms();
+  let q = supabase.from("questions").select("system_tag, discipline_tag, question_type").limit(100000);
+  if (excluded.length) q = q.not("nbme_form", "in", `(${excluded.join(",")})`); // never count sealed/exam-reserved forms
+  const { data, error } = await q;
   if (error) throw error;
   const rows = (data ?? []) as { system_tag: string; discipline_tag: string; question_type: string }[];
   const tally = (pick: (r: any) => string): FilterFacet[] => {
@@ -597,7 +639,9 @@ export interface QuestionFilter {
 
 /** Count of questions matching a custom-block filter (for the live preview). */
 export async function countQuestionsByFilter(f: QuestionFilter): Promise<number> {
+  const excluded = await customExcludedForms();
   let query = supabase.from("questions").select("id", { count: "exact", head: true });
+  if (excluded.length) query = query.not("nbme_form", "in", `(${excluded.join(",")})`); // custom-eligible forms only
   if (f.system) query = query.eq("system_tag", f.system);
   if (f.discipline) query = query.eq("discipline_tag", f.discipline);
   if (f.questionType) query = query.eq("question_type", f.questionType);
@@ -608,7 +652,10 @@ export async function countQuestionsByFilter(f: QuestionFilter): Promise<number>
 
 /** Full questions matching a filter, capped at `limit` (custom practice block). */
 export async function getQuestionsByFilter(f: QuestionFilter, limit: number): Promise<FullQuestion[]> {
+  const excluded = await customExcludedForms();
   let query = supabase.from("questions").select(FULL_COLUMNS);
+  // HARD GUARD: a custom block must NEVER pull an exam-reserved (sealed) form.
+  if (excluded.length) query = query.not("nbme_form", "in", `(${excluded.join(",")})`);
   if (f.system) query = query.eq("system_tag", f.system);
   if (f.discipline) query = query.eq("discipline_tag", f.discipline);
   if (f.questionType) query = query.eq("question_type", f.questionType);

@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAttemptsWithQuestions, getCompletedBlocks, getForms, getResumableSessions, type FormSummary } from "@/lib/queries";
 import type { BlockSession } from "@/lib/types";
 import { blocksForForm, canonicalizeAttempts, modeClass, type AnalyticsAttempt, type BlockSummary } from "@/lib/analytics";
+import { useFormModes } from "@/hooks/useFormModes";
+import {
+  ALL_FORM_MODES, FORM_MODE_LABELS, HOME_MODE_TO_FORM_MODE, allowsMode, formInfo, isAdjudicable, isExamReserved,
+  type FormMode, type FormModeInfo,
+} from "@/lib/formModes";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { BarChart3, BookOpen, CheckCircle2, LogOut, PlayCircle, Timer, Layers, FileText, SlidersHorizontal, RotateCcw } from "lucide-react";
+import { BarChart3, BookOpen, CheckCircle2, LogOut, PlayCircle, Timer, Layers, FileText, SlidersHorizontal, RotateCcw, Lock, ShieldAlert } from "lucide-react";
 
 type Mode = "practice" | "block" | "full_exam";
 
@@ -27,6 +32,7 @@ export default function Home() {
   const [resumables, setResumables] = useState<BlockSession[]>([]);
   const [completed, setCompleted] = useState<{ mode: string; form: number | null; block: number | null }[]>([]);
   const [attempts, setAttempts] = useState<AnalyticsAttempt[]>([]);
+  const modes = useFormModes(); // per-form gating from form_modes (null until loaded)
 
   useEffect(() => {
     getForms()
@@ -37,6 +43,18 @@ export default function Home() {
       .catch((e) => setError(e.message ?? "Failed to load forms"));
   }, []);
 
+  // Fail-open forms (in the bank but absent from form_modes) default to all modes —
+  // warn once each so a missing curation row is visible, never silent.
+  const warnedRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!forms || !modes) return;
+    for (const f of forms)
+      if (!modes.has(f.form) && !warnedRef.current.has(f.form)) {
+        warnedRef.current.add(f.form);
+        console.warn(`[nbme] form ${f.form} has no form_modes row — defaulting to all modes allowed (fail-open).`);
+      }
+  }, [forms, modes]);
+
   useEffect(() => {
     if (!user) return;
     getResumableSessions(user.id).then(setResumables).catch(() => {});
@@ -46,9 +64,31 @@ export default function Home() {
     getAttemptsWithQuestions(user.id).then((raw) => setAttempts(canonicalizeAttempts(raw))).catch(() => {});
   }, [user]);
 
-  const active = MODES.find((m) => m.id === mode)!;
   const selected = forms?.find((f) => f.form === form) ?? null;
-  const gridClass = mode === "practice" ? "practice" : "timed"; // grid modes: practice | block
+
+  // ── Per-form mode gating (all derived from form_modes; no hardcoded forms) ──
+  const selectedInfo = selected ? formInfo(modes, selected.form) : null;
+  const allowedHomeModes = useMemo(
+    () => (selectedInfo ? MODES.filter((m) => allowsMode(selectedInfo, HOME_MODE_TO_FORM_MODE[m.id])) : []),
+    [selectedInfo]
+  );
+  const examReserved = !!selectedInfo && isExamReserved(selectedInfo);
+  // A form with no Home mode (practice/timed/exam) but 'custom' — steer to the builder.
+  const customOnly = !!selectedInfo && allowedHomeModes.length === 0 && allowsMode(selectedInfo, "custom");
+
+  // What actually renders: the user's mode if the form permits it, else its first
+  // allowed one — so an exam-reserved form never flashes a practice grid before the
+  // snap-to-allowed effect fires.
+  const effectiveMode: Mode =
+    selectedInfo && !allowsMode(selectedInfo, HOME_MODE_TO_FORM_MODE[mode]) ? (allowedHomeModes[0]?.id ?? mode) : mode;
+  const active = MODES.find((m) => m.id === effectiveMode)!;
+  const gridClass = effectiveMode === "practice" ? "practice" : "timed"; // grid modes: practice | block
+
+  // Persist the snap so downstream state (and a later re-select) stays consistent.
+  useEffect(() => {
+    if (selectedInfo && effectiveMode !== mode) setMode(effectiveMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, modes]);
 
   // Which (form, block) are finished in the CURRENT grid's mode-class. A full_exam
   // sitting finishes every block of its form, so it marks them all timed-complete.
@@ -142,6 +182,8 @@ export default function Home() {
             const done = formProgress.get(f.form)?.size ?? 0;
             const allDone = done > 0 && done >= f.blockCount;
             const pct = f.blockCount ? Math.round((done / f.blockCount) * 100) : 0;
+            const info = formInfo(modes, f.form);
+            const reserved = isExamReserved(info);
             return (
               <button
                 key={f.form}
@@ -158,6 +200,17 @@ export default function Home() {
                 </div>
                 <div className="font-semibold text-slate-800">NBME {f.form}</div>
                 <div className="text-xs text-muted-foreground">{f.blockCount} block{f.blockCount === 1 ? "" : "s"} · {f.questionCount} Q</div>
+                <ModeBadges info={info} />
+                {reserved && (
+                  <div className="flex items-center gap-1 text-[11px] font-medium text-slate-500">
+                    <Lock className="size-3" /> Reserved for diagnostic — kept unseen
+                  </div>
+                )}
+                {isAdjudicable(info) && (
+                  <div className="flex items-center gap-1 text-[11px] font-medium text-amber-700">
+                    <ShieldAlert className="size-3" /> Answer key pending physician validation
+                  </div>
+                )}
                 {done > 0 && (
                   <div className="mt-1 w-full">
                     <div className="flex items-center justify-between text-[11px] font-medium text-slate-600">
@@ -175,29 +228,62 @@ export default function Home() {
         </div>
 
         {/* ── Step 2: pick a mode (only after a form is chosen) ────────────── */}
-        {selected && (
+        {selected && selectedInfo && (
           <>
             <div className="mt-10">
               <h2 className="text-2xl font-semibold text-slate-800">
                 NBME {selected.form} · <span className="text-slate-500">start studying</span>
               </h2>
+              {examReserved && (
+                <p className="mt-1 flex items-center gap-1.5 text-sm text-slate-500">
+                  <Lock className="size-4" /> Reserved for the diagnostic sitting — kept unseen. Its only entry is a full exam.
+                </p>
+              )}
+              {isAdjudicable(selectedInfo) && (
+                <p className="mt-1 flex items-center gap-1.5 text-sm text-amber-700">
+                  <ShieldAlert className="size-4" /> Answer key pending physician validation.
+                </p>
+              )}
             </div>
 
+            {customOnly ? (
+              // No practice/timed/exam entry — this form is for custom drills only.
+              <Card className="mt-5 max-w-md">
+                <CardContent className="flex flex-col items-start gap-3 p-5">
+                  <div className="text-sm text-slate-700">
+                    {selectedInfo.note || "This form is reserved for custom blocks — build a targeted set from your weak areas."}
+                  </div>
+                  <Button onClick={() => navigate("/custom")}>
+                    <SlidersHorizontal className="size-4" /> Build a custom block
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+            <>
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  className={cn(
-                    "flex flex-col items-start gap-1.5 rounded-lg border p-4 text-left transition-colors",
-                    mode === m.id ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent"
-                  )}
-                >
-                  <m.icon className={cn("size-5", mode === m.id ? "text-primary" : "text-slate-500")} />
-                  <div className="font-semibold text-slate-800">{m.label}</div>
-                  <div className="text-xs text-muted-foreground">{m.blurb}</div>
-                </button>
-              ))}
+              {MODES.map((m) => {
+                const allowed = allowsMode(selectedInfo, HOME_MODE_TO_FORM_MODE[m.id]);
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => allowed && setMode(m.id)}
+                    disabled={!allowed}
+                    title={allowed ? undefined : selectedInfo.note || `Not available for NBME ${selected.form}.`}
+                    className={cn(
+                      "flex flex-col items-start gap-1.5 rounded-lg border p-4 text-left transition-colors",
+                      !allowed
+                        ? "cursor-not-allowed border-dashed border-border bg-muted/30 opacity-60"
+                        : effectiveMode === m.id ? "border-primary bg-accent ring-1 ring-primary" : "border-border bg-card hover:bg-accent"
+                    )}
+                  >
+                    <m.icon className={cn("size-5", !allowed ? "text-slate-400" : effectiveMode === m.id ? "text-primary" : "text-slate-500")} />
+                    <div className={cn("font-semibold", allowed ? "text-slate-800" : "text-slate-500")}>{m.label}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {allowed ? m.blurb : (selectedInfo.note || "Not available for this form.")}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
             {/* ── Step 3: block picker / full-exam launcher ─────────────────── */}
@@ -205,7 +291,7 @@ export default function Home() {
               <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{active.label}</h3>
               <p className="mb-4 mt-1 text-sm text-muted-foreground">{active.blurb}</p>
 
-              {mode === "full_exam" ? (
+              {effectiveMode === "full_exam" ? (
                 <Card className="max-w-md">
                   <CardContent className="flex flex-col items-start gap-3 p-5">
                     <div className="text-sm text-slate-700">
@@ -223,7 +309,7 @@ export default function Home() {
                     const done = completedBlocks.has(n);
                     const b = blockScores.get(n);
                     const score = done ? (gridClass === "practice" ? b?.practice : b?.timed) : undefined;
-                    const to = `/${mode === "practice" ? "practice" : "exam"}/${selected.form}/${n}`;
+                    const to = `/${effectiveMode === "practice" ? "practice" : "exam"}/${selected.form}/${n}`;
                     return (
                       <Card key={n} className={cn("transition-shadow hover:shadow-md", done && "bg-muted/40 border-dashed")}>
                         <CardContent className="flex flex-col items-start gap-3 p-4">
@@ -250,9 +336,26 @@ export default function Home() {
                 </div>
               )}
             </div>
+            </>
+            )}
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+/** Small pills showing which modes a form permits (from form_modes). */
+function ModeBadges({ info }: { info: FormModeInfo }) {
+  const allowed = ALL_FORM_MODES.filter((m) => info.allowedModes.includes(m));
+  if (allowed.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {allowed.map((m: FormMode) => (
+        <span key={m} className="rounded border border-border bg-muted/60 px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+          {FORM_MODE_LABELS[m]}
+        </span>
+      ))}
     </div>
   );
 }
